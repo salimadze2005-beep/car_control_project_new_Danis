@@ -327,162 +327,155 @@ class VisionLoop:
                 yellows = sorted([c['pos_3d'] for c in current_cones if c['name'] in self.config.yellow_cones], key=lambda p: p[1])[:6]
                 orange_cones = [c for c in current_cones if c['name'] in self.config.orange_cones]
 
-
-                    # 3. Интерполяция траектории
-                    centerline = []
-                    half_track = self.config.track_width / 2.0
-                    z_grid = np.arange(0.3, self.config.max_depth, 0.2)
+                # 3. Интерполяция траектории
+                centerline = []
+                half_track = self.config.track_width / 2.0
+                z_grid = np.arange(0.3, self.config.max_depth, 0.2)
+                
+                left_bound_x, l_min_z, l_max_z = self._get_boundary_data(blues, z_grid)
+                right_bound_x, r_min_z, r_max_z = self._get_boundary_data(yellows, z_grid)
+                
+                for i, z in enumerate(z_grid):
+                    lx = left_bound_x[i] if left_bound_x is not None else None
+                    rx = right_bound_x[i] if right_bound_x is not None else None
                     
-                    left_bound_x, l_min_z, l_max_z = self._get_boundary_data(blues, z_grid)
-                    right_bound_x, r_min_z, r_max_z = self._get_boundary_data(yellows, z_grid)
+                    valid_l = lx is not None and (l_min_z - 0.4 <= z <= l_max_z + 0.4)
+                    valid_r = rx is not None and (r_min_z - 0.4 <= z <= r_max_z + 0.4)
                     
-                    for i, z in enumerate(z_grid):
-                        lx = left_bound_x[i] if left_bound_x is not None else None
-                        rx = right_bound_x[i] if right_bound_x is not None else None
-                        
-                        valid_l = lx is not None and (l_min_z - 0.4 <= z <= l_max_z + 0.4)
-                        valid_r = rx is not None and (r_min_z - 0.4 <= z <= r_max_z + 0.4)
-                        
-                        if valid_l and valid_r:
+                    if valid_l and valid_r:
+                        cx = (lx + rx) / 2.0
+                    elif valid_l:
+                        cx = lx + half_track
+                    elif valid_r:
+                        cx = rx - half_track
+                    else:
+                        if lx is not None and rx is not None:
                             cx = (lx + rx) / 2.0
-                        elif valid_l:
+                        elif lx is not None:
                             cx = lx + half_track
-                        elif valid_r:
+                        elif rx is not None:
                             cx = rx - half_track
                         else:
-                            if lx is not None and rx is not None:
-                                cx = (lx + rx) / 2.0
-                            elif lx is not None:
-                                cx = lx + half_track
-                            elif rx is not None:
-                                cx = rx - half_track
-                            else:
-                                cx = 0.0 
-                                
-                        centerline.append((cx, z))
+                            cx = 0.0 
+                            
+                    centerline.append((cx, z))
 
-                    waypoints_3d = [{'x': cx, 'z': cz, 'type': 'centerline'} for cx, cz in centerline]
+                waypoints_3d = [{'x': cx, 'z': cz, 'type': 'centerline'} for cx, cz in centerline]
 
-                    # 4. ВЫБОР ЦЕЛИ (Lookahead)
-                    lookahead_dist = self.config.lookahead_distance
-                    target_wp = None
-                    for cx, cz in centerline:
-                        if cz >= lookahead_dist:
-                            target_wp = (cx, cz)
-                            break
-                            
-                    if target_wp is None and len(centerline) > 0:
-                        target_wp = centerline[-1]
+                # 4. ВЫБОР ЦЕЛИ (Lookahead)
+                lookahead_dist = self.config.lookahead_distance
+                target_wp = None
+                for cx, cz in centerline:
+                    if cz >= lookahead_dist:
+                        target_wp = (cx, cz)
+                        break
+                        
+                if target_wp is None and len(centerline) > 0:
+                    target_wp = centerline[-1]
 
-                    # 5. EMA Сглаживание целевой точки (теперь очень слабое для мгновенной реакции)
-                    if target_wp is not None:
-                        tx, tz = target_wp
-                        alpha = getattr(self.config, 'ema_alpha', 0.85)
-                        self.smooth_tx = self.smooth_tx + alpha * (tx - self.smooth_tx)
-                        self.smooth_tz = self.smooth_tz + alpha * (tz - self.smooth_tz)
-                    else:
-                        decay = getattr(self.config, 'error_decay_rate', 0.5)
-                        self.smooth_tx *= decay
+                # 5. EMA Сглаживание целевой точки
+                if target_wp is not None:
+                    tx, tz = target_wp
+                    alpha = getattr(self.config, 'ema_alpha', 0.85)
+                    self.smooth_tx = self.smooth_tx + alpha * (tx - self.smooth_tx)
+                    self.smooth_tz = self.smooth_tz + alpha * (tz - self.smooth_tz)
+                else:
+                    decay = getattr(self.config, 'error_decay_rate', 0.5)
+                    self.smooth_tx *= decay
 
-                    target_x = self.smooth_tx
-                    target_z = self.smooth_tz
+                target_x = self.smooth_tx
+                target_z = self.smooth_tz
 
-                    # 6. Проверка стоп-конуса
-                    target_detected = False
-                    if orange_cones:
-                        stop_threshold = getattr(self.config, 'stop_cone_z_threshold', 0.5)
-                        if any(oc['pos_3d'][1] <= stop_threshold for oc in orange_cones):
-                            target_detected = True
+                # 6. Проверка стоп-конуса
+                target_detected = False
+                if orange_cones:
+                    stop_threshold = getattr(self.config, 'stop_cone_z_threshold', 0.5)
+                    if any(oc['pos_3d'][1] <= stop_threshold for oc in orange_cones):
+                        target_detected = True
 
-                    # ОТРИСОВКА ТРАЕКТОРИИ
-                    if self.config.draw_trajectory and should_process:
-                        pts_2d = [[image_np.shape[1]//2, image_np.shape[0]]]
-                        for wp in waypoints_3d:
-                            u = int((wp['x'] * self.fx / wp['z']) + self.cx_cam)
-                            v = int(image_np.shape[0] * self.config.cone_base_v)
-                            pts_2d.append([u, v])
-                        if len(pts_2d) > 1:
-                            pts_arr = np.array(pts_2d, np.int32).reshape((-1, 1, 2))
-                            cv2.polylines(image_np, [pts_arr], isClosed=False, 
-                                         color=self.config.trajectory_color, 
-                                         thickness=self.config.trajectory_thickness)
+                # ОТРИСОВКА ТРАЕКТОРИИ
+                if self.config.draw_trajectory:
+                    pts_2d = [[image_np.shape[1]//2, image_np.shape[0]]]
+                    for wp in waypoints_3d:
+                        u = int((wp['x'] * self.fx / wp['z']) + self.cx_cam)
+                        v = int(image_np.shape[0] * self.config.cone_base_v)
+                        pts_2d.append([u, v])
+                    if len(pts_2d) > 1:
+                        pts_arr = np.array(pts_2d, np.int32).reshape((-1, 1, 2))
+                        cv2.polylines(image_np, [pts_arr], isClosed=False, 
+                                     color=self.config.trajectory_color, 
+                                     thickness=self.config.trajectory_thickness)
 
-                    # ОТРИСОВКА ЦЕЛИ
-                    if target_x is not None and target_z > 0:
-                        if self.config.draw_target:
-                            target_u = int((target_x * self.fx / target_z) + self.cx_cam)
-                            target_v = int(image_np.shape[0] * self.config.cone_base_v)
-                            cv2.drawMarker(image_np, (target_u, target_v), (0, 0, 255), 
-                                          cv2.MARKER_CROSS, 
-                                          self.config.target_cross_size, 
-                                          self.config.target_cross_thickness)
+                # ОТРИСОВКА ЦЕЛИ
+                if target_x is not None and target_z > 0:
+                    if self.config.draw_target:
+                        target_u = int((target_x * self.fx / target_z) + self.cx_cam)
+                        target_v = int(image_np.shape[0] * self.config.cone_base_v)
+                        cv2.drawMarker(image_np, (target_u, target_v), (0, 0, 255), 
+                                      cv2.MARKER_CROSS, 
+                                      self.config.target_cross_size, 
+                                      self.config.target_cross_thickness)
 
-                    # ОТРИСОВКА КОНУСОВ
-                    if self.config.draw_detections and should_process:
-                        for det in detections:
-                            x1, y1, x2, y2 = det['bbox']
-                            cone_name = det.get('name', '')
-                            
-                            if cone_name in self.config.blue_cones:
-                                color = (255, 0, 0)
-                            elif cone_name in self.config.yellow_cones:
-                                color = (0, 255, 255)
-                            elif cone_name in self.config.orange_cones:
-                                color = (0, 165, 255)
-                            else:
-                                color = (255, 255, 255)
-                            
-                            cv2.rectangle(image_np, (x1, y1), (x2, y2), color, 2)
-                            cv2.putText(image_np, cone_name, (x1, y1-10), 
-                                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-
-                    # УПРАВЛЕНИЕ И ПИД-РЕГУЛЯТОР
-                    if self.robot_state.get('auto_mode', False):
-                        if target_detected:
-                            self.robot_state['auto_mode'] = False
-                            self.robot_state['msg'] = "ФИНИШ! ОРАНЖЕВЫЙ КОНУС."
-                            self.robot_state['msg_time'] = time.time()
-                            def _brake(car=self.car):
-                                car.stop()
-                            threading.Thread(target=_brake, daemon=True).start()
-                            
-                            # Сброс ПИД при остановке
-                            self.pid_integral = 0.0
-                            self.pid_last_error = 0.0
-                            
-                        elif target_x is not None and target_z > 0:
-                            error = math.atan2(target_x, target_z)
-                            
-                            # Расчет дельты времени для ПИД
-                            dt = current_time - self.last_pid_time
-                            if dt <= 0.0:
-                                dt = 0.03
-                                
-                            # I-компонента
-                            self.pid_integral += error * dt
-                            max_i = self.config.max_integral
-                            self.pid_integral = max(-max_i, min(max_i, self.pid_integral))
-                            
-                            # D-компонента
-                            derivative = (error - self.pid_last_error) / dt
-                            
-                            # Итоговый расчет руля
-                            steering = (self.config.kp_gain * error + 
-                                        self.config.ki_gain * self.pid_integral + 
-                                        self.config.kd_gain * derivative)
-                            
-                            max_s = self.config.max_steering_output
-                            steering = max(-max_s, min(max_s, steering))
-                            
-                            self.pid_last_error = error
-                            self.car.update(1.0, steering)
+                # ОТРИСОВКА КОНУСОВ
+                if self.config.draw_detections:
+                    for det in active_detections:
+                        x1, y1, x2, y2 = det['bbox']
+                        cone_name = det.get('name', '')
+                        
+                        if cone_name in self.config.blue_cones:
+                            color = (255, 0, 0)
+                        elif cone_name in self.config.yellow_cones:
+                            color = (0, 255, 255)
+                        elif cone_name in self.config.orange_cones:
+                            color = (0, 165, 255)
                         else:
-                            # Сброс ПИД, если не видим цель
-                            self.pid_integral = 0.0
-                            self.pid_last_error = 0.0
-                            self.car.update(1.0, 0.0)
+                            color = (255, 255, 255)
+                        
+                        cv2.rectangle(image_np, (x1, y1), (x2, y2), color, 2)
+                        cv2.putText(image_np, cone_name, (x1, y1-10), 
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+
+                # УПРАВЛЕНИЕ И ПИД-РЕГУЛЯТОР
+                if self.robot_state.get('auto_mode', False):
+                    if target_detected:
+                        self.robot_state['auto_mode'] = False
+                        self.robot_state['msg'] = "ФИНИШ! ОРАНЖЕВЫЙ КОНУС."
+                        self.robot_state['msg_time'] = time.time()
+                        def _brake(car=self.car):
+                            car.stop()
+                        threading.Thread(target=_brake, daemon=True).start()
+                        
+                        self.pid_integral = 0.0
+                        self.pid_last_error = 0.0
+                        
+                    elif target_x is not None and target_z > 0:
+                        error = math.atan2(target_x, target_z)
+                        
+                        dt = current_time - self.last_pid_time
+                        if dt <= 0.0:
+                            dt = 0.03
                             
-                        self.last_pid_time = current_time
+                        self.pid_integral += error * dt
+                        max_i = self.config.max_integral
+                        self.pid_integral = max(-max_i, min(max_i, self.pid_integral))
+                        
+                        derivative = (error - self.pid_last_error) / dt
+                        
+                        steering = (self.config.kp_gain * error + 
+                                    self.config.ki_gain * self.pid_integral + 
+                                    self.config.kd_gain * derivative)
+                        
+                        max_s = self.config.max_steering_output
+                        steering = max(-max_s, min(max_s, steering))
+                        
+                        self.pid_last_error = error
+                        self.car.update(1.0, steering)
+                    else:
+                        self.pid_integral = 0.0
+                        self.pid_last_error = 0.0
+                        self.car.update(1.0, 0.0)
+                        
+                    self.last_pid_time = current_time
 
                 # FPS 
                 fps_counter += 1
