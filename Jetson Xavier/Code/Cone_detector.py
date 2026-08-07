@@ -1,178 +1,107 @@
-import tensorrt as trt
-import pycuda.driver as cuda
-import numpy as np
-import cv2
-import logging
+import time
+import serial
+import threading
+import serial.tools.list_ports
 
-logger = logging.getLogger(__name__)
+#Автопоиск ардуино
+def find_arduino_port():
+    ports = serial.tools.list_ports.comports()
+    for port in ports:
+        if ('Arduino' in port.description or 'CH340' in port.description or 'USB Serial' in port.description):
+            return port.device
+       
+    for port in ports:
+        if port.vid and port.pid:
+            if (port.vid == 0x2341) or (port.vid == 0x1A86):
+                print(f"Ардуино найдена на порту: {port.device}")
+                return port.device
+    print('Arduino not found')
+    return None
 
-class ConeDetector:
+#Функции управления машинкой
+class CarController:
     def __init__(self, config):
         self.config = config
-        self.class_id_to_name = {int(k): v for k, v in self.config.class_names.items()}
-        
-        # Задаем размер, под который был скомпилирован .engine файл
-        self.imgsz = 640 
-        self.cuda_ctx = None
-        
-        logger.info(f"Загрузка нативного TensorRT engine: {self.config.yolo_model_path}")
+        self.lock = threading.Lock()
+        self.last_sent_time    = 0                                      # Время отправки последней команды (для command_interval)
+        self.last_command_time = 0                                      # Для watchdog
+        self.last_sent_cmd     = ""                                     # Последняя отправленная строка команды
+        self.arduino = None
+
+        port = find_arduino_port()
+        if port is None: return
         
         try:
-            # 1. Инициализируем драйвер CUDA
-            try:
-                cuda.init()
-            except cuda.LogicError:
-                pass # Уже инициализировано
-            
-            self.dev = cuda.Device(0)
-            self.cuda_ctx = self.dev.make_context()
-            
-            # 2. КРИТИЧЕСКИ ВАЖНО: Пушим контекст ПЕРЕД созданием execution context!
-            # Это привязывает внутренние ресурсы TensorRT именно к нашему PyCUDA контексту.
-            self.cuda_ctx.push()
-            
-            self.trt_logger = trt.Logger(trt.Logger.WARNING)
-            self.engine = self._load_engine(self.config.yolo_model_path)
-            
-            # 3. Создаем execution context (теперь он валиден)
-            self.context = self.engine.create_execution_context()
-            self.inputs, self.outputs, self.bindings, self.stream = self._allocate_buffers(self.engine)
-            
-            # 4. Убираем контекст из стека главного потока
-            self.cuda_ctx.pop()
-            
-            logger.info("TensorRT Runtime успешно инициализирован!")
+            self.arduino = serial.Serial(port, self.config.baud_rate, timeout=1)
+            time.sleep(self.config.arduino_init_delay)
+            self.stop()
+            time.sleep(self.config.arduino_post_stop_delay)
         except Exception as e:
-            logger.error(f"Ошибка загрузки TRT Engine: {e}")
-            self.engine = None
-            if self.cuda_ctx:
-                try: self.cuda_ctx.pop()
-                except: pass
+            self.arduino = None
+   
+    def set_speeds(self, forward, back):
+        self.config.forward_speed = forward
+        self.config.back_speed = back
+   
+    def update(self, speed, steering):
+        if not self.arduino: return
+        speed_clamped = max(-1.0, min(1.0, float(speed)))
+        motor_value = self.config.neutral_speed
+        if speed_clamped > 0: motor_value = int(self.config.neutral_speed + (self.config.forward_speed - self.config.neutral_speed) * speed_clamped)
+        elif speed_clamped < 0: motor_value = int(self.config.neutral_speed + (self.config.back_speed - self.config.neutral_speed) * abs(speed_clamped))
+       
+        steering_clamped = max(-1.0, min(1.0, float(steering)))
+        steer_value = int(self.config.center_steering - (steering_clamped * self.config.steering_range))
+        steer_value = max(0, min(180, steer_value))
+       
+        command = f"<{motor_value},{steer_value}>"
+        current_time = time.time()
+        should_send = False
 
-    def __del__(self):
-        """Гарантированное очищение стека контекстов при завершении программы"""
-        if self.cuda_ctx:
+        if self.last_sent_cmd != command:
+            should_send = True
+        elif (current_time - self.last_sent_time) > self.config.command_interval:
+            should_send = True
+
+        if should_send:
+            with self.lock:
+                try:
+                    self.arduino.write(command.encode('utf-8'))
+                    self.last_sent_cmd = command
+                    self.last_sent_time = current_time
+                    self.last_command_time = current_time 
+                except: self.arduino = None
+    
+    def stop(self):
+        if not self.arduino: return
+        with self.lock:
             try:
-                self.cuda_ctx.synchronize()
-                self.cuda_ctx.pop()
-            except:
-                pass
-            try:
-                self.cuda_ctx.detach()
-            except:
-                pass
-
-    def _load_engine(self, engine_path):
-        with open(engine_path, "rb") as f, trt.Runtime(self.trt_logger) as runtime:
-            return runtime.deserialize_cuda_engine(f.read())
-
-    def _allocate_buffers(self, engine):
-        inputs, outputs, bindings = [], [], []
-        stream = cuda.Stream()
-        for i in range(engine.num_bindings):
-            name = engine.get_binding_name(i)
-            size = trt.volume(engine.get_binding_shape(i))
-            dtype = trt.nptype(engine.get_binding_dtype(i))
-            host_mem = cuda.pagelocked_empty(size, dtype)
-            device_mem = cuda.mem_alloc(host_mem.nbytes)
-            bindings.append(int(device_mem))
-            if engine.binding_is_input(i):
-                inputs.append({'host': host_mem, 'device': device_mem, 'name': name, 'shape': engine.get_binding_shape(i)})
-            else:
-                outputs.append({'host': host_mem, 'device': device_mem, 'name': name, 'shape': engine.get_binding_shape(i)})
-        return inputs, outputs, bindings, stream
-
-    def detect(self, frame):
-        if self.engine is None or frame is None:
-            return []
-            
-        orig_h, orig_w = frame.shape[:2]
+                cmd = f"<{self.config.neutral_speed},{self.config.center_steering}>"
+                self.arduino.write(cmd.encode('utf-8'))
+                self.last_sent_cmd = cmd
+                self.last_command_time = time.time()
+            except: pass
+   
+    def check_stop(self):
+        if self.arduino and time.time() - self.last_command_time > self.config.watchdog_timeout: self.stop()
         
-        # ==========================================
-        # 1. ПРЕ-ПРОЦЕССИНГ (CPU)
-        # ==========================================
-        img = cv2.resize(frame, (self.imgsz, self.imgsz))
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        img = img.astype(np.float32) / 255.0
-        img = np.transpose(img, (2, 0, 1)) 
-        np.copyto(self.inputs[0]['host'], img.ravel())
-        
-        # ==========================================
-        # 2. ИНФЕРЕНС (GPU)
-        # ==========================================
-        # Пушим контекст в рабочем потоке
-        self.cuda_ctx.push()
+    def close(self):
+        self.stop()
+        time.sleep(self.config.arduino_close_delay)
+        if self.arduino: self.arduino.close()
+    
+    def restart(self):
+        """Перезагрузка подключения Arduino"""
+        self.close()
+        time.sleep(0.5)
+        port = find_arduino_port()
+        if port is None: 
+            self.arduino = None
+            return
         try:
-            # Для explicit batch engine ОБЯЗАТЕЛЬНО задаем shape
-            self.context.set_binding_shape(0, (1, 3, self.imgsz, self.imgsz))
-            
-            cuda.memcpy_htod_async(self.inputs[0]['device'], self.inputs[0]['host'], self.stream)
-            self.context.execute_async_v2(bindings=self.bindings, stream_handle=self.stream.handle)
-            cuda.memcpy_dtoh_async(self.outputs[0]['host'], self.outputs[0]['device'], self.stream)
-            self.stream.synchronize()
+            self.arduino = serial.Serial(port, self.config.baud_rate, timeout=1)
+            time.sleep(self.config.arduino_init_delay)
+            self.stop()
+            time.sleep(self.config.arduino_post_stop_delay)
         except Exception as e:
-            logger.error(f"Ошибка инференса TRT: {e}")
-        finally:
-            # Всегда убираем контекст, даже если была ошибка
-            self.cuda_ctx.pop()
-
-        # ==========================================
-        # 3. ПОСТ-ПРОЦЕССИНГ (CPU)
-        # ==========================================
-        output_data = self.outputs[0]['host']
-        out_shape = self.outputs[0]['shape'] 
-        
-        output_data = output_data.reshape(out_shape) 
-        output_data = output_data[0].T 
-        
-        boxes_raw = output_data[:, :4]
-        scores_raw = output_data[:, 4:]
-        class_ids = np.argmax(scores_raw, axis=1)
-        confidences = np.max(scores_raw, axis=1)
-        
-        mask = confidences > self.config.confidence_threshold
-        boxes_raw = boxes_raw[mask]
-        confidences = confidences[mask]
-        class_ids = class_ids[mask]
-        
-        if len(boxes_raw) == 0:
-            return []
-            
-        x_scale = orig_w / self.imgsz
-        y_scale = orig_h / self.imgsz
-        boxes_nms = []
-        for (cx, cy, w, h) in boxes_raw:
-            x = (cx - w / 2) * x_scale
-            y = (cy - h / 2) * y_scale
-            bw = w * x_scale
-            bh = h * y_scale
-            boxes_nms.append([int(x), int(y), int(bw), int(bh)])
-            
-        indices = cv2.dnn.NMSBoxes(
-            boxes_nms, 
-            confidences.tolist(), 
-            self.config.confidence_threshold, 
-            self.config.iou_threshold
-        )
-        
-        detections = []
-        if len(indices) > 0:
-            for i in indices.flatten():
-                x, y, bw, bh = boxes_nms[i]
-                conf = float(confidences[i])
-                cls_id = int(class_ids[i])
-                cone_name = self.class_id_to_name.get(cls_id)
-                if cone_name is None: 
-                    continue
-                x1, y1 = max(0, int(x)), max(0, int(y))
-                x2, y2 = min(orig_w, int(x + bw)), min(orig_h, int(y + bh))
-                center_x = (x1 + x2) // 2
-                center_y = max(0, int(y1 + (y2 - y1) * self.config.point_of_view_offset_y))
-                detections.append({
-                    'bbox': (x1, y1, x2, y2),
-                    'conf': conf,
-                    'class': cls_id,
-                    'name': cone_name,
-                    'center': (center_x, center_y)
-                })
-        return detections
+            self.arduino = None
