@@ -18,6 +18,7 @@ import json
 import math
 import subprocess
 from datetime import datetime
+from itertools import combinations
 import cv2
 import pyzed.sl as sl
 import threading
@@ -47,6 +48,88 @@ config = Config()
 DISABLE_WEB = os.environ.get("DISABLE_WEB", "0") == "1"
 FORCE_HD720_60 = os.environ.get("FORCE_HD720_60", "0") == "1"
 USE_CUDA = os.environ.get("USE_CUDA", "0") == "1" and CUDA_AVAILABLE
+
+
+class ConeTracker:
+    """Сопровождает конусы в плоскости XZ между результатами детектора."""
+
+    def __init__(self, max_age, match_distance, ema_alpha, confirmations):
+        self.max_age = float(max_age)
+        self.match_distance = float(match_distance)
+        self.ema_alpha = float(ema_alpha)
+        self.confirmations = int(confirmations)
+        self._tracks = []
+
+    def reset(self):
+        self._tracks.clear()
+
+    def _drop_stale(self, now):
+        self._tracks = [
+            track for track in self._tracks
+            if now - track["last_seen"] <= self.max_age
+        ]
+
+    def update(self, observations, now):
+        """Обновляет треки только по новому результату TensorRT."""
+        self._drop_stale(now)
+        candidates = []
+        for observation_index, observation in enumerate(observations):
+            obs_x, obs_z = observation["pos_3d"]
+            for track_index, track in enumerate(self._tracks):
+                if track["name"] != observation["name"]:
+                    continue
+                track_x, track_z = track["pos_3d"]
+                distance = math.hypot(obs_x - track_x, obs_z - track_z)
+                if distance <= self.match_distance:
+                    candidates.append((distance, track_index, observation_index))
+
+        matched_tracks = set()
+        matched_observations = set()
+        for _, track_index, observation_index in sorted(candidates):
+            if track_index in matched_tracks or observation_index in matched_observations:
+                continue
+            track = self._tracks[track_index]
+            observation = observations[observation_index]
+            old_x, old_z = track["pos_3d"]
+            new_x, new_z = observation["pos_3d"]
+            alpha = self.ema_alpha
+            track["pos_3d"] = (
+                old_x + alpha * (new_x - old_x),
+                old_z + alpha * (new_z - old_z),
+            )
+            track["confidence"] = (
+                track["confidence"] + alpha * (observation["confidence"] - track["confidence"])
+            )
+            track["last_seen"] = now
+            track["hits"] += 1
+            matched_tracks.add(track_index)
+            matched_observations.add(observation_index)
+
+        for observation_index, observation in enumerate(observations):
+            if observation_index not in matched_observations:
+                self._tracks.append(
+                    {
+                        "name": observation["name"],
+                        "pos_3d": observation["pos_3d"],
+                        "confidence": observation["confidence"],
+                        "last_seen": now,
+                        "hits": 1,
+                    }
+                )
+
+        return self.active(now)
+
+    def active(self, now):
+        self._drop_stale(now)
+        return [
+            {
+                "name": track["name"],
+                "pos_3d": track["pos_3d"],
+                "confidence": track["confidence"],
+            }
+            for track in self._tracks
+            if track["hits"] >= self.confirmations
+        ]
 
 
 class VisionLoop:
@@ -110,6 +193,13 @@ class VisionLoop:
         self.fx = 0
         self.cx_cam = 0
         self.rec_dropped_frames = 0
+        self.current_lookahead = self.config.lookahead_distance
+        self.cone_tracker = ConeTracker(
+            self.config.tracker_max_age,
+            self.config.tracker_match_distance,
+            self.config.tracker_ema_alpha,
+            self.config.tracker_confirmations,
+        )
 
         os.makedirs(self.config.output_folder, exist_ok=True)
 
@@ -153,35 +243,95 @@ class VisionLoop:
                 pass
 
     def _get_boundary_data(self, cones, z_targets):
-        """Интерполяция X-координат с фильтрацией выбросов и сортировкой по Z"""
-        valid_cones = [c for c in cones if abs(c[0]) < 2.5]
+        """Строит устойчивую границу по консенсусу линейных/квадратичных моделей."""
+        max_abs_x = self.config.track_width * 2.0
+        valid_cones = sorted(
+            (
+                (float(x), float(z))
+                for x, z in cones
+                if (
+                    np.isfinite(x)
+                    and np.isfinite(z)
+                    and 0.0 < z <= self.config.max_depth
+                    and abs(x) <= max_abs_x
+                )
+            ),
+            key=lambda point: point[1],
+        )
         if not valid_cones:
             return None, 999.0, -1.0
-        valid_cones.sort(key=lambda c: c[1])
-        z_vals = []
-        x_vals = []
-        last_z = None
-        for c in valid_cones:
-            z = c[1]
-            x = c[0]
-            if last_z is None or z > last_z + 1e-3:
-                z_vals.append(z)
-                x_vals.append(x)
-                last_z = z
-        if not z_vals:
-            return None, 999.0, -1.0
-        min_z, max_z = z_vals[0], z_vals[-1]
-        if len(z_vals) == 1:
-            bound_x = np.full_like(z_targets, x_vals[0], dtype=float)
-        else:
-            bound_x = np.interp(
-                z_targets,
-                z_vals,
-                x_vals,
-                left=x_vals[0],
-                right=x_vals[-1]
+
+        # Несколько наблюдений одной и той же дальности объединяем медианой.
+        groups = []
+        for point in valid_cones:
+            if not groups or point[1] - groups[-1][-1][1] > 0.05:
+                groups.append([point])
+            else:
+                groups[-1].append(point)
+        x_values = np.array([np.median([point[0] for point in group]) for group in groups])
+        z_values = np.array([np.median([point[1] for point in group]) for group in groups])
+        min_z, max_z = float(z_values[0]), float(z_values[-1])
+
+        if len(z_values) == 1:
+            return np.full_like(z_targets, x_values[0], dtype=float), min_z, max_z
+
+        degree = 2 if len(z_values) >= 3 else 1
+        sample_size = degree + 1
+        tolerance = float(self.config.boundary_fit_tolerance)
+        best_inliers = None
+        best_score = (-1, float("-inf"))
+
+        for sample_indices in combinations(range(len(z_values)), sample_size):
+            try:
+                coefficients = np.polyfit(z_values[list(sample_indices)], x_values[list(sample_indices)], degree)
+            except (np.linalg.LinAlgError, ValueError):
+                continue
+            residuals = np.abs(np.polyval(coefficients, z_values) - x_values)
+            inliers = residuals <= tolerance
+            score = (
+                int(np.count_nonzero(inliers)),
+                -float(np.sum(np.minimum(residuals, tolerance))),
             )
-        return bound_x, min_z, max_z
+            if score > best_score:
+                best_score = score
+                best_inliers = inliers
+
+        if best_inliers is None:
+            bound_x = np.interp(z_targets, z_values, x_values)
+        else:
+            fit_degree = min(degree, int(np.count_nonzero(best_inliers)) - 1)
+            coefficients = np.polyfit(
+                z_values[best_inliers],
+                x_values[best_inliers],
+                fit_degree,
+            )
+            bound_x = np.polyval(coefficients, z_targets)
+        return np.asarray(bound_x, dtype=float), min_z, max_z
+
+    def _adaptive_lookahead(self, centerline):
+        """На прямой смотрит дальше, а при росте кривизны переносит цель ближе."""
+        minimum = float(self.config.lookahead_min_distance)
+        maximum = float(self.config.lookahead_max_distance)
+        if len(centerline) < 3:
+            return float(np.clip(self.config.lookahead_distance, minimum, maximum))
+
+        points = np.asarray(centerline, dtype=float)
+        dx = np.diff(points[:, 0])
+        dz = np.diff(points[:, 1])
+        segment_lengths = np.hypot(dx, dz)
+        headings = np.arctan2(dx, dz)
+        if len(headings) < 2:
+            return float(np.clip(self.config.lookahead_distance, minimum, maximum))
+
+        heading_change = np.diff(np.unwrap(headings))
+        mean_step = (segment_lengths[:-1] + segment_lengths[1:]) / 2.0
+        curvature = np.abs(heading_change) / np.maximum(mean_step, 1e-3)
+        near_curvature = curvature[: min(5, len(curvature))]
+        curvature_estimate = float(np.percentile(near_curvature, 75)) if len(near_curvature) else 0.0
+        lookahead = maximum / (
+            1.0 + float(self.config.lookahead_curvature_gain) * curvature_estimate
+        )
+        return float(np.clip(lookahead, minimum, maximum))
 
     @staticmethod
     def _dedup_detections(dets, min_dist=25):
@@ -429,12 +579,14 @@ class VisionLoop:
             # ==========================================================
             # === 1. АСИНХРОННАЯ ДЕТЕКЦИЯ ===
             # ==========================================================
+            has_fresh_detections = False
             while True:
                 try:
                     fresh_detections, fresh_shape = self.result_queue.get_nowait()
                     self.last_detections = fresh_detections
                     self.last_detect_frame_shape = fresh_shape
                     self.last_detection_time = time.monotonic()
+                    has_fresh_detections = True
                 except queue.Empty:
                     break
                 except Exception:
@@ -486,21 +638,24 @@ class VisionLoop:
             # === 3. ОБРАБОТКА И ОТРИСОВКА ===
             # ==========================================================
             current_time = time.time()
-            current_cones = []
+            tracker_time = time.monotonic()
+            observed_cones = []
             for det in active_detections:
                 x1, y1, x2, y2 = det['bbox']
                 width = max(x2 - x1, 1)
                 height = max(y2 - y1, 1)
                 area = width * height
                 z = self.config.area_depth_constant / math.sqrt(area)
-                if self.config.min_depth < z <= self.config.max_depth:
-                    u, v = det['center']
+                if self.config.min_depth < z <= self.config.max_depth and self.fx > 0:
+                    u, _ = det['center']
                     x_cam = (u - self.cx_cam) * z / self.fx
-                    cone_pos = (x_cam, z - self.config.camera_offset_z)
-                    current_cones.append({
-                        'name': det.get('name', ''),
-                        'pos_3d': cone_pos
-                    })
+                    observed_cones.append(
+                        {
+                            'name': det.get('name', ''),
+                            'pos_3d': (x_cam, z - self.config.camera_offset_z),
+                            'confidence': float(det.get('conf', 0.0)),
+                        }
+                    )
                     if self.config.draw_target_z:
                         cv2.putText(
                             image_np,
@@ -511,6 +666,9 @@ class VisionLoop:
                             self.config.z_text_color,
                             self.config.z_text_thickness
                         )
+            if has_fresh_detections:
+                self.cone_tracker.update(observed_cones, tracker_time)
+            current_cones = self.cone_tracker.active(tracker_time)
             blues = sorted(
                 [c['pos_3d'] for c in current_cones if c['name'] in self.config.blue_cones],
                 key=lambda p: p[1]
@@ -529,8 +687,9 @@ class VisionLoop:
             for i, z in enumerate(z_grid):
                 lx = left_bound_x[i] if left_bound_x is not None else None
                 rx = right_bound_x[i] if right_bound_x is not None else None
-                valid_l = lx is not None and (l_min_z - 0.4 <= z <= l_max_z + 0.4)
-                valid_r = rx is not None and (r_min_z - 0.4 <= z <= r_max_z + 0.4)
+                extrapolation = self.config.boundary_extrapolation
+                valid_l = lx is not None and (l_min_z - extrapolation <= z <= l_max_z + extrapolation)
+                valid_r = rx is not None and (r_min_z - extrapolation <= z <= r_max_z + extrapolation)
                 if valid_l and valid_r:
                     cx = (lx + rx) / 2.0
                 elif valid_l:
@@ -538,21 +697,15 @@ class VisionLoop:
                 elif valid_r:
                     cx = rx - half_track
                 else:
-                    if lx is not None and rx is not None:
-                        cx = (lx + rx) / 2.0
-                    elif lx is not None:
-                        cx = lx + half_track
-                    elif rx is not None:
-                        cx = rx - half_track
-                    else:
-                        cx = 0.0
+                    cx = 0.0
                 centerline.append((cx, z))
             waypoints_3d = [
                 {'x': cx, 'z': cz, 'type': 'centerline'}
                 for cx, cz in centerline
             ]
             # Выбор цели (Lookahead)
-            lookahead_dist = self.config.lookahead_distance
+            self.current_lookahead = self._adaptive_lookahead(centerline)
+            lookahead_dist = self.current_lookahead
             target_wp = None
             for cx, cz in centerline:
                 if cz >= lookahead_dist:
@@ -818,6 +971,8 @@ class VisionLoop:
         self.last_detect_frame_shape = None
         self.last_detection_time = 0.0
         self.rec_dropped_frames = 0
+        self.current_lookahead = self.config.lookahead_distance
+        self.cone_tracker.reset()
         self.smooth_tx = 0.0
         self.smooth_tz = self.config.lookahead_distance
         self.pid_integral = 0.0
