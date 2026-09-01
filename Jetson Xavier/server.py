@@ -38,7 +38,7 @@ from Code.Web import start, set_frame
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger(__name__)
 
-config = Config("config.jsonc")
+config = Config()
 
 # Диагностика через переменные окружения:
 # DISABLE_WEB=1    -> не запускать Web и не отправлять кадры
@@ -78,8 +78,16 @@ class VisionLoop:
         else:
             self.publish_every = max(1, self.process_every)
 
-        # ФИКС: запись децимируется до rec_fps на входе в очередь
-        self.rec_fps = int(getattr(self.config, "rec_fps", 30))
+        # Запись не может содержать больше кадров, чем выдаёт камера.
+        requested_rec_fps = int(getattr(self.config, "rec_fps", self.config.zed_fps))
+        self.rec_fps = min(requested_rec_fps, int(self.config.zed_fps))
+        if self.rec_fps != requested_rec_fps:
+            logger.warning(
+                "rec_fps=%s выше zed_fps=%s; для корректной длительности записи используется %s FPS.",
+                requested_rec_fps,
+                self.config.zed_fps,
+                self.rec_fps,
+            )
         self.rec_every = max(1, int(round(self.config.zed_fps / self.rec_fps)))
 
         logger.info(
@@ -103,8 +111,7 @@ class VisionLoop:
         self.cx_cam = 0
         self.rec_dropped_frames = 0
 
-        if not os.path.exists(self.config.output_folder):
-            os.makedirs(self.config.output_folder)
+        os.makedirs(self.config.output_folder, exist_ok=True)
 
         # --- ОЧЕРЕДИ И ПОТОКИ ---
         self.detect_queue = queue.Queue(maxsize=1)
@@ -436,7 +443,9 @@ class VisionLoop:
             if should_process and detect_frame is not None:
                 if not self.detect_queue.full():
                     try:
-                        self.detect_queue.put_nowait(detect_frame)
+                        # Основной поток может рисовать поверх image_np, пока
+                        # TensorRT читает кадр в другом потоке.
+                        self.detect_queue.put_nowait(detect_frame.copy())
                     except queue.Full:
                         pass
             # ==========================================================
