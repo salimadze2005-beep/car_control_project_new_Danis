@@ -82,6 +82,44 @@ class ConeDetector:
                 outputs.append({'host': host_mem, 'device': device_mem, 'name': name, 'shape': engine.get_binding_shape(i)})
         return inputs, outputs, bindings, stream
 
+    def _postprocess_output(self):
+        """Приводит распространённые форматы выхода YOLO к (N, 4 + классы)."""
+        output = self.outputs[0]['host'].reshape(self.outputs[0]['shape'])
+        if output.ndim == 3:
+            output = output[0]
+        if output.ndim != 2:
+            raise ValueError(f"Неожиданная размерность выхода TensorRT: {output.shape}")
+
+        expected_columns = 4 + len(self.class_id_to_name)
+        if output.shape[0] == expected_columns and output.shape[1] != expected_columns:
+            output = output.T
+        elif output.shape[1] < expected_columns <= output.shape[0]:
+            output = output.T
+
+        if output.shape[1] < expected_columns:
+            raise ValueError(
+                f"Неожиданная форма выхода TensorRT: {output.shape}; "
+                f"ожидалось не менее {expected_columns} столбцов."
+            )
+        return output
+
+    def _class_aware_nms(self, boxes, confidences, class_ids):
+        """Выполняет NMS отдельно по классам, не подавляя конусы разных цветов."""
+        kept_indices = []
+        for class_id in np.unique(class_ids):
+            class_indices = np.flatnonzero(class_ids == class_id)
+            class_boxes = [boxes[index] for index in class_indices]
+            class_confidences = confidences[class_indices].astype(float).tolist()
+            indices = cv2.dnn.NMSBoxes(
+                class_boxes,
+                class_confidences,
+                self.config.confidence_threshold,
+                self.config.iou_threshold,
+            )
+            if len(indices) > 0:
+                kept_indices.extend(class_indices[np.asarray(indices).reshape(-1)].tolist())
+        return kept_indices
+
     def detect(self, frame):
         if self.engine is None or frame is None:
             return []
@@ -112,6 +150,7 @@ class ConeDetector:
             self.stream.synchronize()
         except Exception as e:
             logger.error(f"Ошибка инференса TRT: {e}")
+            return []
         finally:
             # Всегда убираем контекст, даже если была ошибка
             self.cuda_ctx.pop()
@@ -119,11 +158,11 @@ class ConeDetector:
         # ==========================================
         # 3. ПОСТ-ПРОЦЕССИНГ (CPU)
         # ==========================================
-        output_data = self.outputs[0]['host']
-        out_shape = self.outputs[0]['shape'] 
-        
-        output_data = output_data.reshape(out_shape) 
-        output_data = output_data[0].T 
+        try:
+            output_data = self._postprocess_output()
+        except ValueError as error:
+            logger.error("Ошибка обработки выхода TensorRT: %s", error)
+            return []
         
         boxes_raw = output_data[:, :4]
         scores_raw = output_data[:, 4:]
@@ -148,16 +187,8 @@ class ConeDetector:
             bh = h * y_scale
             boxes_nms.append([int(x), int(y), int(bw), int(bh)])
             
-        indices = cv2.dnn.NMSBoxes(
-            boxes_nms, 
-            confidences.tolist(), 
-            self.config.confidence_threshold, 
-            self.config.iou_threshold
-        )
-        
         detections = []
-        if len(indices) > 0:
-            for i in indices.flatten():
+        for i in self._class_aware_nms(boxes_nms, confidences, class_ids):
                 x, y, bw, bh = boxes_nms[i]
                 conf = float(confidences[i])
                 cls_id = int(class_ids[i])
@@ -166,6 +197,8 @@ class ConeDetector:
                     continue
                 x1, y1 = max(0, int(x)), max(0, int(y))
                 x2, y2 = min(orig_w, int(x + bw)), min(orig_h, int(y + bh))
+                if x2 <= x1 or y2 <= y1:
+                    continue
                 center_x = (x1 + x2) // 2
                 center_y = max(0, int(y1 + (y2 - y1) * self.config.point_of_view_offset_y))
                 detections.append({
