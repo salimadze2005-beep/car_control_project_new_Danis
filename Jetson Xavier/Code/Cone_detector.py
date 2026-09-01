@@ -50,16 +50,17 @@ class ConeDetector:
                 except: pass
 
     def __del__(self):
-        """Гарантированное очищение стека контекстов при завершении программы"""
-        if self.cuda_ctx:
+        """Гарантированно освобождает CUDA-контекст даже при неполной инициализации."""
+        cuda_ctx = getattr(self, "cuda_ctx", None)
+        if cuda_ctx:
             try:
-                self.cuda_ctx.synchronize()
-                self.cuda_ctx.pop()
-            except:
+                cuda_ctx.synchronize()
+                cuda_ctx.pop()
+            except Exception:
                 pass
             try:
-                self.cuda_ctx.detach()
-            except:
+                cuda_ctx.detach()
+            except Exception:
                 pass
 
     def _load_engine(self, engine_path):
