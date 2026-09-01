@@ -1,13 +1,22 @@
 from flask import Flask, Response, render_template_string
-import cv2
-import numpy as np
+import logging
 import threading
 
-app = Flask(__name__)
+import cv2
+import numpy as np
 
-# Сюда будет записываться кадр из основного кода
+app = Flask(__name__)
+logger = logging.getLogger(__name__)
+
+# Последний кадр и общий JPEG-кэш для всех подключённых браузеров.
 current_frame = None
-frame_lock = threading.Lock()
+current_frame_id = 0
+current_jpeg = None
+encoded_frame_id = -1
+active_streams = 0
+frame_condition = threading.Condition()
+encoder_thread = None
+JPEG_PARAMS = [cv2.IMWRITE_JPEG_QUALITY, 80]
 
 HTML = """
 <!DOCTYPE html>
@@ -26,36 +35,122 @@ HTML = """
 </html>
 """
 
-def set_frame(frame):
-    """Основной код вызывает эту функцию чтобы обновить кадр"""
-    global current_frame
-    with frame_lock:
-        if frame is not None:
-            current_frame = frame.copy()
 
-@app.route('/')
+def set_frame(frame):
+    """Публикует новый кадр; JPEG-кодирование выполнит отдельный поток."""
+    global current_frame, current_frame_id
+
+    if frame is None:
+        return
+
+    with frame_condition:
+        current_frame = frame.copy()
+        current_frame_id += 1
+        frame_condition.notify_all()
+
+
+def _encode_loop():
+    """Кодирует только свежие кадры и только пока к потоку подключён клиент."""
+    global current_jpeg, encoded_frame_id
+
+    last_frame_id = -1
+    while True:
+        with frame_condition:
+            frame_condition.wait_for(
+                lambda: (
+                    active_streams > 0
+                    and current_frame is not None
+                    and current_frame_id != last_frame_id
+                )
+            )
+            frame = current_frame.copy()
+            frame_id = current_frame_id
+
+        try:
+            success, jpeg = cv2.imencode(".jpg", frame, JPEG_PARAMS)
+        except Exception:
+            logger.exception("Не удалось закодировать кадр веб-стрима")
+            last_frame_id = frame_id
+            continue
+
+        last_frame_id = frame_id
+        if not success:
+            logger.warning("OpenCV не смог закодировать кадр веб-стрима")
+            continue
+
+        with frame_condition:
+            current_jpeg = jpeg.tobytes()
+            encoded_frame_id = frame_id
+            frame_condition.notify_all()
+
+
+def _start_encoder():
+    """Запускает единственный кодировщик, даже если start() вызван повторно."""
+    global encoder_thread
+
+    with frame_condition:
+        if encoder_thread is not None and encoder_thread.is_alive():
+            return
+        encoder_thread = threading.Thread(
+            target=_encode_loop,
+            name="web-jpeg-encoder",
+            daemon=True,
+        )
+        encoder_thread.start()
+
+
+@app.route("/")
 def index():
     return render_template_string(HTML)
 
-@app.route('/video')
+
+@app.route("/video")
 def video():
     def generate():
-        while True:
-            with frame_lock:
-                if current_frame is not None:
-                    frame = current_frame.copy()
-                else:
-                    # Если кадра нет, показываем чёрный экран
-                    frame = np.zeros((480, 640, 3), dtype=np.uint8)
-            
-            ret, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
-            if ret:
-                yield (b'--frame\r\n'
-                       b'Content-Type: image/jpeg\r\n\r\n' + jpeg.tobytes() + b'\r\n')
-    
-    return Response(generate(), mimetype='multipart/x-mixed-replace; boundary=frame')
+        global active_streams
+
+        last_jpeg_id = -1
+        with frame_condition:
+            active_streams += 1
+            frame_condition.notify_all()
+
+        try:
+            while True:
+                with frame_condition:
+                    frame_condition.wait_for(
+                        lambda: (
+                            current_jpeg is not None
+                            and encoded_frame_id != last_jpeg_id
+                        )
+                    )
+                    jpeg = current_jpeg
+                    last_jpeg_id = encoded_frame_id
+
+                yield (
+                    b"--frame\r\n"
+                    b"Content-Type: image/jpeg\r\n\r\n"
+                    + jpeg
+                    + b"\r\n"
+                )
+        finally:
+            with frame_condition:
+                active_streams = max(0, active_streams - 1)
+                frame_condition.notify_all()
+
+    return Response(generate(), mimetype="multipart/x-mixed-replace; boundary=frame")
+
 
 def start():
-    """Запуск веб-сервера в отдельном потоке"""
-    threading.Thread(target=lambda: app.run(host='0.0.0.0', port=5000, threaded=True), daemon=True).start()
-    print("Web server started on port 5000")
+    """Запускает кодировщик и веб-сервер в отдельных фоновых потоках."""
+    _start_encoder()
+    threading.Thread(
+        target=lambda: app.run(
+            host="0.0.0.0",
+            port=5000,
+            threaded=True,
+            use_reloader=False,
+        ),
+        name="web-server",
+        daemon=True,
+    ).start()
+    logger.info("Web server started on port 5000")
