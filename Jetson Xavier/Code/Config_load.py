@@ -105,6 +105,15 @@ class Config:
             self.virtual_steer_k = ap['virtual_steer_k']
             self.stop_cone_z_threshold = ap['stop_cone_z_threshold']
             self.area_depth_constant = ap['area_depth_constant']
+            self.boundary_fit_tolerance = ap.get('boundary_fit_tolerance', 0.25)
+            self.boundary_extrapolation = ap.get('boundary_extrapolation', 0.4)
+            self.tracker_max_age = ap.get('tracker_max_age', 0.5)
+            self.tracker_match_distance = ap.get('tracker_match_distance', 0.6)
+            self.tracker_ema_alpha = ap.get('tracker_ema_alpha', 0.55)
+            self.tracker_confirmations = ap.get('tracker_confirmations', 2)
+            self.lookahead_min_distance = ap.get('lookahead_min_distance', 0.45)
+            self.lookahead_max_distance = ap.get('lookahead_max_distance', 0.9)
+            self.lookahead_curvature_gain = ap.get('lookahead_curvature_gain', 1.2)
 
             # Vision
             vis = cfg['vision']
@@ -227,6 +236,20 @@ class Config:
             raise ConfigError("video.rec_fps должен быть больше нуля.")
         if int(self.rec_queue_size) <= 0:
             raise ConfigError("video.rec_queue_size должен быть больше нуля.")
+        if float(self.boundary_fit_tolerance) <= 0.0:
+            raise ConfigError("autopilot.boundary_fit_tolerance должен быть больше нуля.")
+        if float(self.boundary_extrapolation) < 0.0:
+            raise ConfigError("autopilot.boundary_extrapolation не может быть отрицательным.")
+        if float(self.tracker_max_age) <= 0.0 or float(self.tracker_match_distance) <= 0.0:
+            raise ConfigError("Параметры tracker_max_age и tracker_match_distance должны быть больше нуля.")
+        if not 0.0 < float(self.tracker_ema_alpha) <= 1.0:
+            raise ConfigError("autopilot.tracker_ema_alpha должен быть в диапазоне (0, 1].")
+        if int(self.tracker_confirmations) <= 0:
+            raise ConfigError("autopilot.tracker_confirmations должен быть больше нуля.")
+        if not 0.0 < float(self.lookahead_min_distance) <= float(self.lookahead_max_distance):
+            raise ConfigError("Дистанции lookahead должны быть положительными, а минимум не больше максимума.")
+        if float(self.lookahead_curvature_gain) < 0.0:
+            raise ConfigError("autopilot.lookahead_curvature_gain не может быть отрицательным.")
         for name in ("confidence_threshold", "iou_threshold", "point_of_view_offset_y"):
             value = float(getattr(self, name))
             if not 0.0 <= value <= 1.0:
