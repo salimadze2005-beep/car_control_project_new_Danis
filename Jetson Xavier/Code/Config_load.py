@@ -70,7 +70,7 @@ class Config:
             net = cfg['network']
             self.udp_ip = net['udp_ip']
             self.udp_port = net['udp_port']
-            
+
             # Car
             car = cfg['car']
             self.baud_rate = car['baud_rate']
@@ -81,7 +81,7 @@ class Config:
             self.command_interval = car['command_interval']
             self.watchdog_timeout = car['watchdog_timeout']
             self.steering_range = car['steering_range']
-            
+
             # PID
             pid = cfg['pid']
             self.kp_gain = pid['kp_gain']
@@ -92,7 +92,7 @@ class Config:
             self.error_decay_rate = pid['error_decay_rate']
             self.max_steering_output = pid['max_steering_output']
             self.min_dt = pid['min_dt']
-            
+
             # Autopilot
             ap = cfg['autopilot']
             self.max_depth = ap['max_depth']
@@ -105,7 +105,7 @@ class Config:
             self.virtual_steer_k = ap['virtual_steer_k']
             self.stop_cone_z_threshold = ap['stop_cone_z_threshold']
             self.area_depth_constant = ap['area_depth_constant']
-            
+
             # Vision
             vis = cfg['vision']
             self.yolo_model_path = vis['yolo_model_path']
@@ -123,7 +123,7 @@ class Config:
             self.point_of_view_offset_y = vis['point_of_view_offset_y']
             self.target_cross_size = vis['target_cross_size']
             self.target_cross_thickness = vis['target_cross_thickness']
-            
+
             # Detection
             det = cfg['detection']
             self.cone_colors = det['cone_colors']
@@ -138,7 +138,7 @@ class Config:
             self.z_text_scale = det['z_text_scale']
             self.z_text_thickness = det['z_text_thickness']
             self.z_text_color = det['z_text_color']
-            
+
             # Display
             disp = cfg['display']
             self.draw_detections = disp['draw_detections']
@@ -164,7 +164,7 @@ class Config:
             self.waypoint_color_stop = disp['waypoint_color_stop']
             self.pair_line_thickness = disp['pair_line_thickness']
             self.pair_line_color = disp['pair_line_color']
-            
+
             # Video
             vid = cfg['video']
             self.temp_codec = vid['temp_codec']
@@ -176,7 +176,7 @@ class Config:
             self.temp_extension = vid['temp_extension']
             self.output_prefix = vid['output_prefix']
             self.fps_update_interval = vid['fps_update_interval']
-            
+
             # Timing
             tim = cfg['timing']
             self.vision_thread_join_timeout = tim['vision_thread_join_timeout']
