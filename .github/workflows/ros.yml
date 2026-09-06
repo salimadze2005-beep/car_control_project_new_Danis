@@ -19,10 +19,9 @@ jobs:
         shell: bash
         run: |
           source /opt/ros/noetic/setup.bash
-          mkdir -p /tmp/car_ws/src
-          ln -s "$GITHUB_WORKSPACE/ros/car_control_ros" /tmp/car_ws/src/car_control_ros
+          CAR_WS=/tmp/car_ws bash ros/build.sh
           cd /tmp/car_ws
-          catkin_make
           source devel/setup.bash
           catkin_make run_tests
           catkin_test_results
+          catkin_make install
