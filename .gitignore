@@ -7,3 +7,5 @@ models/
 *.log
 car_control.log
 car_control.log.*
+ros_ws/
+*.bag

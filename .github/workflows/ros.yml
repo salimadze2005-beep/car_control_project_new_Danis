@@ -1,0 +1,28 @@
+name: ROS simulation
+on:
+  push:
+    branches: [ros]
+  workflow_dispatch:
+jobs:
+  noetic:
+    runs-on: ubuntu-22.04
+    container: ros:noetic-ros-base-focal
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install test dependencies
+        run: |
+          apt-get update
+          apt-get install -y python3-catkin-pkg python3-rospkg ros-noetic-rostest ros-noetic-rosnode ros-noetic-visualization-msgs
+      - name: Pure controller and closed-loop tests
+        run: python3 -m unittest discover -s ros/car_control_ros/test -p 'test_*.py' -v
+      - name: Catkin build and ROS integration test
+        shell: bash
+        run: |
+          source /opt/ros/noetic/setup.bash
+          mkdir -p /tmp/car_ws/src
+          ln -s "$GITHUB_WORKSPACE/ros/car_control_ros" /tmp/car_ws/src/car_control_ros
+          cd /tmp/car_ws
+          catkin_make
+          source devel/setup.bash
+          catkin_make run_tests
+          catkin_test_results
