@@ -8,6 +8,14 @@ catkin_package(CATKIN_DEPENDS message_runtime rospy std_msgs std_srvs geometry_m
 catkin_install_python(PROGRAMS scripts/controller_node.py scripts/simulator_node.py scripts/fsds_node.py scripts/vision_node.py DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
 install(DIRECTORY launch config DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION})
 get_filename_component(PACKAGE_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}" REALPATH)
+# Build artifacts only: canonical source stays in shared/, including in install space.
+# Catkin's generated Python relays do not support a second external package root.
+file(GLOB CORE_MODULES "${PACKAGE_SOURCE}/../../shared/car_control_core/*.py")
+foreach(CORE_MODULE ${CORE_MODULES})
+  get_filename_component(CORE_NAME "${CORE_MODULE}" NAME)
+  configure_file("${CORE_MODULE}" "${CATKIN_DEVEL_PREFIX}/${CATKIN_GLOBAL_PYTHON_DESTINATION}/car_control_core/${CORE_NAME}" COPYONLY)
+endforeach()
+install(DIRECTORY "${PACKAGE_SOURCE}/../../shared/car_control_core" DESTINATION ${CATKIN_GLOBAL_PYTHON_DESTINATION} FILES_MATCHING PATTERN "*.py" PATTERN "__pycache__" EXCLUDE)
 install(DIRECTORY "${PACKAGE_SOURCE}/../../Jetson Xavier/Code" DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/legacy FILES_MATCHING PATTERN "*.py")
 install(FILES "${PACKAGE_SOURCE}/../../Jetson Xavier/config.jsonc" DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/legacy)
 if(CATKIN_ENABLE_TESTING)

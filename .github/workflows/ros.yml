@@ -22,6 +22,9 @@ jobs:
           CAR_WS=/tmp/car_ws bash ros/build.sh
           cd /tmp/car_ws
           source devel/setup.bash
+          python3 -c "from car_control_ros.core import Controller; from car_control_core.core import Controller as Shared; assert Controller is Shared"
           catkin_make run_tests
           catkin_test_results
           catkin_make install
+          source install/setup.bash
+          python3 -c "from car_control_ros.core import Controller; from car_control_core.core import Controller as Shared; assert Controller is Shared"
