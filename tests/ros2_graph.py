@@ -12,6 +12,8 @@ from car_control_sim.node import ControllerNode
 
 
 def main():
+    # Verify pure adapter enum assumptions against ACTUAL generated upstream messages.
+    assert (Cone.BLUE, Cone.YELLOW, Cone.ORANGE_BIG, Cone.ORANGE_SMALL, Cone.UNKNOWN) == (0, 1, 2, 3, 4)
     rclpy.init(args=['--ros-args', '-p', 'backend:=fsds', '-p', 'use_sim_time:=true'])
     fake = Node('fsds_fixture')
     latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)

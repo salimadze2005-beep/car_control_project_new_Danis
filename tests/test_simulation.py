@@ -138,6 +138,8 @@ class SafetyTests(unittest.TestCase):
         self.assertEqual(s.tick(1.,10.),Command())
         s.last_output=Command(2.,0.,0.)
         self.assertEqual(s.tick(1.,10.),Command())
+        self.assertEqual(s.reason, 'invalid_command')
+        self.assertTrue(s.fault)
 
     def test_go_heartbeat_expiration(self):
         s = Session(Parameters(),enabled=True,require_go=True)

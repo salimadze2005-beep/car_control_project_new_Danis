@@ -67,7 +67,9 @@ class Session:
             self.last_step_stamp = sample[1]
         if not valid_command(self.last_output):
             self.reason = 'invalid_command'
+            self.fault = True
             self.last_output = Command()
+            return self.last_output
         if self.last_output.brake:
             self.reason = 'finished' if self.core.finished else 'no_usable_cones'
         self.was_driving = self.was_driving or self.last_output.throttle > 0

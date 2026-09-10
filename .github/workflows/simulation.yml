@@ -26,9 +26,17 @@ jobs:
         run: |
           apt-get update
           apt-get install -y git build-essential cmake pkg-config libeigen3-dev libyaml-cpp-dev libcurl4-openssl-dev libboost-dev libopencv-dev python3-colcon-common-extensions ros-humble-ament-cmake-auto ros-humble-cv-bridge ros-humble-image-transport ros-humble-tf2-ros ros-humble-rosgraph-msgs ros-humble-visualization-msgs
+      - name: Build and test ROS2 lightweight without fs_msgs
+        shell: bash
+        run: |
+          CAR_WS=/tmp/car_light_ws bash tools/build_ros2.sh
+          source /tmp/car_light_ws/install/setup.bash
+          python3 tests/ros2_lightweight.py
       - name: Compile pinned official bridge and wrappers
         shell: bash
-        run: CAR_WS=/tmp/car_sim_ws bash tools/build_ros2.sh --fsds /tmp/fsds
+        run: |
+          CAR_WS=/tmp/car_sim_ws bash tools/build_ros2.sh --fsds /tmp/fsds
+          python3 tools/prepare_fsds.py --destination /tmp/fsds
       - name: ROS2 graph smoke and dropout test (no Unreal)
         shell: bash
         run: |

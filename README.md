@@ -1,19 +1,32 @@
-# car_control_project_new_Danis — ветка ros
+# car_control_project_new_Danis — simulation
 
-Существующий запуск машинки: `Jetson Xavier/server.py` (ZED + TensorRT + Arduino).
+Один controller core для Jetson/ROS1, лёгкого симулятора и FSDS/ROS2.
+Ветка создана от `ros`; обратно ничего не сливается.
 
-Добавлен ROS1-пакет с автономным лёгким симулятором, адаптером Formula Student
-Driverless Simulator и входом камеры для существующего TensorRT-детектора.
+**[Установка и запуск simulation → docs/SIMULATION_SETUP.md](docs/SIMULATION_SETUP.md)**
 
-**[Установка, запуск на Jetson/Linux, FSDS и тесты → ros/README.md](ros/README.md)**
+Самый быстрый запуск на Windows/Linux, Python 3.8+, без ROS/GPU:
 
-После установки зависимостей:
-
-```bash
-bash ros/build.sh
-source ros_ws/devel/setup.bash
-roslaunch car_control_ros sim.launch
+```sh
+python tools/simulate.py --gui
+python -m unittest discover -s tests -v
 ```
 
-Это тест алгоритма на кинематической модели, а не доказательство готовности к
-автономному движению реальной машины. ROS-узлы этой ветки не открывают Arduino.
+Без `--gui` выполняется быстрый deterministic прогон. Математика, `Bicycle`,
+`circle_track` и `world_to_cones` сохранены из `ros` в `shared/car_control_core`.
+FSDS остаётся внешним upstream checkout с зафиксированными commit/submodules.
+
+Полный FSDS-профиль: Windows FSDS v2.2.0 + ROS2 Humble/Ubuntu 22.04 в WSL2,
+штатный `fsds_ros2_bridge`, ground-truth cones/odom, `host:=localhost` или remote host.
+Native Windows lightweight не требует WSL. Native Windows-сборка FSDS ROS2 bridge
+не заявляется поддержанной: объяснение и отдельные инструкции в документации.
+
+Jetson/ZED/TensorRT/Arduino код сохранён, simulation его не импортирует.
+Аппаратный `server.py` использует общий core через `Code/Autopilot.py`.
+[Существующая инструкция ROS1/Jetson](ros/README.md) относится к ROS1-профилю;
+для новой FSDS-интеграции используйте ROS2-инструкцию выше.
+
+Успешные tests не доказывают безопасность реальной машины или прохождение FSDS трассы.
+Unreal GUI, производительность GPU и работа Jetson требуют ручной проверки.
+При полном разрыве RPC последний газ может остаться на удалённом FSDS:
+нужен оператор с доступом к остановке симулятора.

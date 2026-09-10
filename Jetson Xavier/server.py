@@ -104,11 +104,6 @@ class VisionLoop:
         self.last_detections = []
         self.last_detect_frame_shape = None
         self.last_detection_time = 0.0
-        self.smooth_tx = 0.0
-        self.smooth_tz = self.config.lookahead_distance
-        self.pid_integral = 0.0
-        self.pid_last_error = 0.0
-        self.last_pid_time = time.time()
         self.fx = 0
         self.cx_cam = 0
         self.rec_dropped_frames = 0
@@ -153,37 +148,6 @@ class VisionLoop:
                 self.result_queue.put((detections, frame_shape))
             except queue.Full:
                 pass
-
-    def _get_boundary_data(self, cones, z_targets):
-        """Интерполяция X-координат с фильтрацией выбросов и сортировкой по Z"""
-        valid_cones = [c for c in cones if abs(c[0]) < 2.5]
-        if not valid_cones:
-            return None, 999.0, -1.0
-        valid_cones.sort(key=lambda c: c[1])
-        z_vals = []
-        x_vals = []
-        last_z = None
-        for c in valid_cones:
-            z = c[1]
-            x = c[0]
-            if last_z is None or z > last_z + 1e-3:
-                z_vals.append(z)
-                x_vals.append(x)
-                last_z = z
-        if not z_vals:
-            return None, 999.0, -1.0
-        min_z, max_z = z_vals[0], z_vals[-1]
-        if len(z_vals) == 1:
-            bound_x = np.full_like(z_targets, x_vals[0], dtype=float)
-        else:
-            bound_x = np.interp(
-                z_targets,
-                z_vals,
-                x_vals,
-                left=x_vals[0],
-                right=x_vals[-1]
-            )
-        return bound_x, min_z, max_z
 
     @staticmethod
     def _dedup_detections(dets, min_dist=25):
@@ -729,11 +693,7 @@ class VisionLoop:
         self.last_detect_frame_shape = None
         self.last_detection_time = 0.0
         self.rec_dropped_frames = 0
-        self.smooth_tx = 0.0
-        self.smooth_tz = self.config.lookahead_distance
-        self.pid_integral = 0.0
-        self.pid_last_error = 0.0
-        self.last_pid_time = time.time()
+        self.autopilot = HardwareAutopilot(self.config)
         self.detect_queue = queue.Queue(maxsize=1)
         self.result_queue = queue.Queue(maxsize=1)
         self.detect_thread = threading.Thread(target=self._detect_loop, daemon=True)
@@ -787,8 +747,7 @@ def main():
                     if not robot_state['auto_mode']:
                         robot_state['auto_mode'] = True
                         robot_state['msg'] = ''
-                        loop.pid_integral = 0.0
-                        loop.pid_last_error = 0.0
+                        # HardwareAutopilot resets the shared core on enable edge.
                 elif command == "S":
                     if robot_state['auto_mode']:
                         robot_state['auto_mode'] = False

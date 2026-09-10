@@ -1,0 +1,25 @@
+{
+  "SeeDocsAt": "https://fs-driverless.github.io/Formula-Student-Driverless-Simulator/v2.2.0/",
+  "SettingsVersion": 1.2,
+  "LocalHostIp": "127.0.0.1",
+  "ApiServerPort": 41451,
+  "ViewMode": "SpringArmChase",
+  "ClockSpeed": 1.0,
+  "PawnPaths": {
+    "DefaultCar": {"PawnBP": "Class'/AirSim/VehicleAdv/Cars/TechnionCar/TechnionCarPawn.TechnionCarPawn_C'"}
+  },
+  "Vehicles": {
+    "FSCar": {
+      "DefaultVehicleState": "",
+      "EnableCollisionPassthrogh": false,
+      "EnableCollisions": true,
+      "AllowAPIAlways": true,
+      "RC": {"RemoteControlID": -1},
+      "Sensors": {"GSS": {"SensorType": 7, "Enabled": true}},
+      "Cameras": {},
+      "X": 2, "Y": 0, "Z": 0,
+      "Pitch": 0, "Roll": 0, "Yaw": 0
+    }
+  },
+  "SubWindows": []
+}
