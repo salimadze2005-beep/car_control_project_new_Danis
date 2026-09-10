@@ -9,3 +9,8 @@ car_control.log
 car_control.log.*
 ros_ws/
 *.bag
+simulation_ws/
+build/
+install/
+log/
+*.egg-info/

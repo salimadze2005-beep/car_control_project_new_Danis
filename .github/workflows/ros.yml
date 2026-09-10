@@ -1,7 +1,7 @@
 name: ROS simulation
 on:
   push:
-    branches: [ros]
+    branches: [ros, simulation]
   workflow_dispatch:
 jobs:
   noetic:

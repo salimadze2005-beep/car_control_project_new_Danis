@@ -1,0 +1,36 @@
+name: Shared simulation
+on:
+  push:
+    branches: [simulation]
+  workflow_dispatch:
+jobs:
+  core:
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - run: python -m unittest discover -s tests -v
+      - run: python -m unittest discover -s ros/car_control_ros/test -p "test_*.py" -v
+      - run: python tools/simulate.py
+  humble:
+    runs-on: ubuntu-22.04
+    container: ros:humble-ros-base-jammy
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: |
+          apt-get update
+          apt-get install -y git build-essential cmake pkg-config libeigen3-dev libyaml-cpp-dev libcurl4-openssl-dev libboost-dev libopencv-dev python3-colcon-common-extensions ros-humble-ament-cmake-auto ros-humble-cv-bridge ros-humble-image-transport ros-humble-tf2-ros ros-humble-rosgraph-msgs ros-humble-visualization-msgs
+      - name: Compile pinned official bridge and wrappers
+        shell: bash
+        run: CAR_WS=/tmp/car_sim_ws bash tools/build_ros2.sh --fsds /tmp/fsds
+      - name: ROS2 graph smoke and dropout test (no Unreal)
+        shell: bash
+        run: |
+          source /tmp/car_sim_ws/install/setup.bash
+          python3 tests/ros2_graph.py

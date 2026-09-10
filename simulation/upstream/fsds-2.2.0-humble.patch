@@ -1,0 +1,118 @@
+diff --git a/ros2/src/fsds_ros2_bridge/CMakeLists.txt b/ros2/src/fsds_ros2_bridge/CMakeLists.txt
+index 0e5ca53..e07be41 100644
+--- a/ros2/src/fsds_ros2_bridge/CMakeLists.txt
++++ b/ros2/src/fsds_ros2_bridge/CMakeLists.txt
+@@ -1,8 +1,11 @@
+ cmake_minimum_required(VERSION 3.18)
+-project(fsds_ros2_bridge)
++project(fsds_ros2_bridge)
++find_package(Eigen3 3.3 REQUIRED NO_MODULE)
++include_directories(SYSTEM ${EIGEN3_INCLUDE_DIR})
+ 
+ # set this to path to AirSim root folder if you want your catkin workspace in a custom directory
+-set(AIRSIM_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../../AirSim)
++set(AIRSIM_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../../AirSim)
++get_filename_component(AIRSIM_ROOT "${AIRSIM_ROOT}" REALPATH)
+ 
+ add_subdirectory("${AIRSIM_ROOT}/cmake/rpclib_wrapper" rpclib_wrapper)
+ add_subdirectory("${AIRSIM_ROOT}/cmake/AirLib" AirLib)
+diff --git a/ros2/src/fsds_ros2_bridge/include/airsim_ros_wrapper.h b/ros2/src/fsds_ros2_bridge/include/airsim_ros_wrapper.h
+index e7c620d..926f21f 100644
+--- a/ros2/src/fsds_ros2_bridge/include/airsim_ros_wrapper.h
++++ b/ros2/src/fsds_ros2_bridge/include/airsim_ros_wrapper.h
+@@ -249,7 +249,9 @@ private:
+     rclcpp::TimerBase::SharedPtr go_signal_timer_;
+     rclcpp::TimerBase::SharedPtr statictf_timer_;
+ 	rclcpp::TimerBase::SharedPtr extra_info_timer_;
+-	rclcpp::TimerBase::SharedPtr clock_timer_;
++	rclcpp::TimerBase::SharedPtr clock_timer_;
++    rclcpp::TimerBase::SharedPtr command_watchdog_;
++    std::chrono::steady_clock::time_point last_command_time_ = std::chrono::steady_clock::now();
+ 
+     std::vector<std::shared_ptr<rclcpp::Publisher<sensor_msgs::msg::PointCloud2>>> lidar_pub_vec_;
+ 
+diff --git a/ros2/src/fsds_ros2_bridge/package.xml b/ros2/src/fsds_ros2_bridge/package.xml
+index 72c197b..075bcd6 100644
+--- a/ros2/src/fsds_ros2_bridge/package.xml
++++ b/ros2/src/fsds_ros2_bridge/package.xml
+@@ -8,7 +8,9 @@
+ 
+   <license>GPLv2</license>
+ 
+-  <buildtool_depend>ament_cmake</buildtool_depend>
++  <buildtool_depend>ament_cmake</buildtool_depend>
++  <buildtool_depend>ament_cmake_auto</buildtool_depend>
++  <depend>rosgraph_msgs</depend>
+ 
+   <!-- <build_depend>nodelet</build_depend> -->
+   <build_depend>geometry_msgs</build_depend>
+diff --git a/ros2/src/fsds_ros2_bridge/src/airsim_ros_wrapper.cpp b/ros2/src/fsds_ros2_bridge/src/airsim_ros_wrapper.cpp
+index de78a57..59f969c 100644
+--- a/ros2/src/fsds_ros2_bridge/src/airsim_ros_wrapper.cpp
++++ b/ros2/src/fsds_ros2_bridge/src/airsim_ros_wrapper.cpp
+@@ -103,9 +103,9 @@ void AirsimROSWrapper::publish_track() {
+     for (const auto& cone : state.cones) {
+         fs_msgs::msg::Cone cone_object;
+         // 0.01 is a scaling constant that converts to meters
+-        cone_object.location.x = cone.location.x != 0 ? (cone.location.x - car_start_pos.x)*0.01 : 0;
++        cone_object.location.x = (cone.location.x - car_start_pos.x)*0.01;
+         // Negative sign follows ENU convention
+-        cone_object.location.y = cone.location.y != 0 ? -(cone.location.y - car_start_pos.y)*0.01 : 0;
++        cone_object.location.y = -(cone.location.y - car_start_pos.y)*0.01;
+         if (cone.color == CarApiBase::ConeColor::Yellow) {
+             cone_object.color = fs_msgs::msg::Cone::YELLOW;
+         } else if (cone.color == CarApiBase::ConeColor::Blue) {
+@@ -124,8 +124,19 @@ void AirsimROSWrapper::publish_track() {
+     track_pub->publish(track);
+ }
+ 
+-void AirsimROSWrapper::initialize_ros()
+-{
++void AirsimROSWrapper::initialize_ros()
++{
++    // Minimal safety extension to the official bridge; uses its existing RPC client.
++    command_watchdog_ = nh_->create_wall_timer(std::chrono::milliseconds(50), [this]() {
++        if (std::chrono::steady_clock::now() - last_command_time_ > std::chrono::milliseconds(500)) {
++            fs_msgs::msg::ControlCommand stop;
++            stop.brake = 1.0;
++            try { car_control_cb(stop); }
++            catch (const std::exception& error) {
++                RCLCPP_ERROR(nh_->get_logger(), "Command watchdog RPC unavailable: %s", error.what());
++            }
++        }
++    });
+     // ros params
+     double update_odom_every_n_sec;
+     double update_gps_every_n_sec;
+@@ -246,7 +257,7 @@ void AirsimROSWrapper::create_ros_pubs_from_settings_json()
+ 
+         if(!competition_mode_) {
+             odom_pub = nh_->create_publisher<nav_msgs::msg::Odometry>("testing_only/odom", 10);
+-            track_pub = nh_->create_publisher<fs_msgs::msg::Track>("testing_only/track", 10);
++            track_pub = nh_->create_publisher<fs_msgs::msg::Track>("testing_only/track", rclcpp::QoS(1).transient_local().reliable());
+ 			extra_info_pub = nh_->create_publisher<fs_msgs::msg::ExtraInfo>("testing_only/extra_info", 10);
+         }
+         
+@@ -455,15 +466,17 @@ sensor_msgs::msg::NavSatFix AirsimROSWrapper::get_gps_sensor_msg_from_airsim_geo
+     return gps_msg;
+ }
+ 
+-void AirsimROSWrapper::car_control_cb(const fs_msgs::msg::ControlCommand& msg)
+-{
++void AirsimROSWrapper::car_control_cb(const fs_msgs::msg::ControlCommand& msg)
++{
++    last_command_time_ = std::chrono::steady_clock::now();
+     ros_bridge::ROSMsgCounter counter(&control_cmd_sub_statistics);
+ 
+     // Only allow positive braking and throttle commands to be passed through
+     CarApiBase::CarControls controls;
+-    controls.throttle = msg.throttle < 0.0 ? 0.0 : msg.throttle;
+-    controls.steering = msg.steering;
+-    controls.brake = msg.brake < 0.0 ? 0.0 : msg.brake;
++    const bool valid = std::isfinite(msg.throttle) && std::isfinite(msg.steering) && std::isfinite(msg.brake);
++    controls.brake = valid ? std::max(0.0, std::min(1.0, msg.brake)) : 1.0;
++    controls.throttle = valid && controls.brake == 0.0 ? std::max(0.0, std::min(1.0, msg.throttle)) : 0.0;
++    controls.steering = valid ? std::max(-1.0, std::min(1.0, msg.steering)) : 0.0;
+     rclcpp::Time time = msg.header.stamp;
+ 
+     {

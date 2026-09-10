@@ -1,0 +1,11 @@
+{
+  "repository": "https://github.com/FS-Driverless/Formula-Student-Driverless-Simulator.git",
+  "tag": "v2.2.0",
+  "commit": "ba7b1bdac76be3895b864ca917dfc844b344c762",
+  "fs_msgs_ros2_commit": "4146e5b4889fb92332c9ce5ee42a8081649cbe72",
+  "rpclib_commit": "a663a1598a4b419123b2e13c0ae6a39c91dcf5b8",
+  "ros2": "humble",
+  "bridge_os": "Ubuntu 22.04 (native Linux or WSL2)",
+  "simulator_os": "Windows 11 x64",
+  "patch": "upstream/fsds-2.2.0-humble.patch"
+}

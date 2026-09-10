@@ -32,6 +32,7 @@ except Exception:
 
 from Code.Config_load import Config
 from Code.Car_control import CarController
+from Code.Autopilot import HardwareAutopilot
 from Code.Cone_detector import ConeDetector
 from Code.Web import start, set_frame
 
@@ -55,6 +56,7 @@ class VisionLoop:
         self.detector = detector
         self.car = car
         self.robot_state = robot_state
+        self.autopilot = HardwareAutopilot(config)
 
         # --- АТРИБУТЫ ДО ЗАПУСКА ПОТОКОВ ---
         self.running = True
@@ -511,72 +513,13 @@ class VisionLoop:
                             self.config.z_text_color,
                             self.config.z_text_thickness
                         )
-            blues = sorted(
-                [c['pos_3d'] for c in current_cones if c['name'] in self.config.blue_cones],
-                key=lambda p: p[1]
-            )[:6]
-            yellows = sorted(
-                [c['pos_3d'] for c in current_cones if c['name'] in self.config.yellow_cones],
-                key=lambda p: p[1]
-            )[:6]
-            orange_cones = [c for c in current_cones if c['name'] in self.config.orange_cones]
-            # Интерполяция траектории
-            centerline = []
-            half_track = self.config.track_width / 2.0
-            z_grid = np.arange(0.3, self.config.max_depth, 0.2)
-            left_bound_x, l_min_z, l_max_z = self._get_boundary_data(blues, z_grid)
-            right_bound_x, r_min_z, r_max_z = self._get_boundary_data(yellows, z_grid)
-            for i, z in enumerate(z_grid):
-                lx = left_bound_x[i] if left_bound_x is not None else None
-                rx = right_bound_x[i] if right_bound_x is not None else None
-                valid_l = lx is not None and (l_min_z - 0.4 <= z <= l_max_z + 0.4)
-                valid_r = rx is not None and (r_min_z - 0.4 <= z <= r_max_z + 0.4)
-                if valid_l and valid_r:
-                    cx = (lx + rx) / 2.0
-                elif valid_l:
-                    cx = lx + half_track
-                elif valid_r:
-                    cx = rx - half_track
-                else:
-                    if lx is not None and rx is not None:
-                        cx = (lx + rx) / 2.0
-                    elif lx is not None:
-                        cx = lx + half_track
-                    elif rx is not None:
-                        cx = rx - half_track
-                    else:
-                        cx = 0.0
-                centerline.append((cx, z))
-            waypoints_3d = [
-                {'x': cx, 'z': cz, 'type': 'centerline'}
-                for cx, cz in centerline
-            ]
-            # Выбор цели (Lookahead)
-            lookahead_dist = self.config.lookahead_distance
-            target_wp = None
-            for cx, cz in centerline:
-                if cz >= lookahead_dist:
-                    target_wp = (cx, cz)
-                    break
-            if target_wp is None and len(centerline) > 0:
-                target_wp = centerline[-1]
-            # EMA сглаживание целевой точки
-            if target_wp is not None:
-                tx, tz = target_wp
-                alpha = getattr(self.config, 'ema_alpha', 0.85)
-                self.smooth_tx = self.smooth_tx + alpha * (tx - self.smooth_tx)
-                self.smooth_tz = self.smooth_tz + alpha * (tz - self.smooth_tz)
-            else:
-                decay = getattr(self.config, 'error_decay_rate', 0.5)
-                self.smooth_tx *= decay
-            target_x = self.smooth_tx
-            target_z = self.smooth_tz
-            # Проверка стоп-конуса
-            target_detected = False
-            if orange_cones:
-                stop_threshold = getattr(self.config, 'stop_cone_z_threshold', 0.5)
-                if any(oc['pos_3d'][1] <= stop_threshold for oc in orange_cones):
-                    target_detected = True
+            auto_command = self.autopilot.update(
+                current_cones, self.robot_state.get('auto_mode', False),
+                self.last_detection_time, time.monotonic())
+            target_x = self.autopilot.controller.tx
+            target_z = self.autopilot.controller.tz
+            # Display the target actually used by the shared controller.
+            waypoints_3d = [{'x': target_x, 'z': target_z, 'type': 'target'}]
             # Отрисовка траектории — КАЖДЫЙ кадр
             if self.config.draw_trajectory:
                 pts_2d = [[image_np.shape[1] // 2, image_np.shape[0]]]
@@ -629,51 +572,19 @@ class VisionLoop:
                         color,
                         2
                     )
-            # Управление и ПИД-регулятор
+            # Actuation only; all trajectory/PID math lives in shared core.
             if self.robot_state.get('auto_mode', False):
-                if target_detected:
+                if self.autopilot.controller.finished:
                     self.robot_state['auto_mode'] = False
                     self.robot_state['msg'] = "ФИНИШ! ОРАНЖЕВЫЙ КОНУС."
                     self.robot_state['msg_time'] = time.time()
-
-                    def _brake(car=self.car):
-                        try:
-                            car.stop()
-                        except Exception as e:
-                            logger.error(f"Ошибка торможения: {e}")
-
-                    threading.Thread(target=_brake, daemon=True).start()
-                    self.pid_integral = 0.0
-                    self.pid_last_error = 0.0
-                elif target_x is not None and target_z > 0:
-                    error = math.atan2(target_x, target_z)
-                    dt = current_time - self.last_pid_time
-                    if dt <= 0.0:
-                        dt = 0.03
-                    self.pid_integral += error * dt
-                    max_i = self.config.max_integral
-                    self.pid_integral = max(-max_i, min(max_i, self.pid_integral))
-                    derivative = (error - self.pid_last_error) / dt
-                    steering = (
-                        self.config.kp_gain * error +
-                        self.config.ki_gain * self.pid_integral +
-                        self.config.kd_gain * derivative
-                    )
-                    max_s = self.config.max_steering_output
-                    steering = max(-max_s, min(max_s, steering))
-                    self.pid_last_error = error
-                    try:
-                        self.car.update(1.0, steering)
-                    except Exception as e:
-                        logger.error(f"Ошибка car.update(): {e}")
-                else:
-                    self.pid_integral = 0.0
-                    self.pid_last_error = 0.0
-                    try:
-                        self.car.update(1.0, 0.0)
-                    except Exception as e:
-                        logger.error(f"Ошибка car.update(): {e}")
-                self.last_pid_time = current_time
+                try:
+                    if auto_command.brake > 0:
+                        self.car.stop()
+                    else:
+                        self.car.update(auto_command.throttle, auto_command.steering)
+                except Exception as error:
+                    logger.error("Ошибка управления: %s", error)
             # FPS
             fps_counter += 1
             elapsed_fps_time = time.time() - fps_last_time

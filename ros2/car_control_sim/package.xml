@@ -1,0 +1,13 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>car_control_sim</name><version>0.2.0</version>
+  <description>ROS2 adapters for the shared controller and official FSDS bridge.</description>
+  <maintainer email="salimadze2005-beep@users.noreply.github.com">Project maintainers</maintainer>
+  <license>Proprietary</license>
+  <buildtool_depend>ament_python</buildtool_depend>
+  <exec_depend>car_control_core</exec_depend><exec_depend>rclpy</exec_depend>
+  <exec_depend>nav_msgs</exec_depend><exec_depend>std_msgs</exec_depend>
+  <exec_depend>std_srvs</exec_depend><exec_depend>visualization_msgs</exec_depend>
+  <exec_depend>launch_ros</exec_depend><exec_depend>ament_index_python</exec_depend>
+  <export><build_type>ament_python</build_type></export>
+</package>
