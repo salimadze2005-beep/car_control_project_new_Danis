@@ -224,9 +224,19 @@ ros2 service call /car/enable std_srvs/srv/SetBool "{data: false}"
 Controller стартует DISABLED и публикует brake. GO от bridge — дополнительный
 heartbeat, не замена пользовательского enable и не аппаратный safety interlock.
 
+Проверенный для WSL2 профиль FSDS использует `bridge_telemetry_period:=0.05`:
+20 Hz для telemetry и controller command. Это необходимо, потому что upstream
+bridge использует однопоточный executor; его штатные 250 Hz odom polling вместе
+с 50 Hz command могут starving callback управления через Windows↔WSL RPC.
+FSDS-адаптер ограничивает скорость до 2 m/s и применяет brake 0.25 выше лимита.
+
+```bash
+ros2 launch car_control_sim fsds.launch.py host:="$FSDS_HOST" fsds_max_speed_mps:=1.5
+```
+
 Если mirrored недоступен, WSL NAT — всё ещё LOCAL режим на одном компьютере.
-В JSON на Windows разрешите API слушать доступный интерфейс: `LocalHostIp`:
-`0.0.0.0` вместо `127.0.0.1`, перезапустите FSDS. Windows gateway из WSL:
+В `settings.json` на Windows укажите `LocalHostIp` ровно как Windows gateway из
+WSL (на проверенном ноутбуке `172.21.112.1`), затем перезапустите FSDS.
 
 ```bash
 FSDS_HOST=$(ip route show default | awk '{print $3; exit}')
@@ -296,16 +306,16 @@ launcher может отличаться от FSOnline. В облаке огра
 Track — статическая карта; freshness проверяется по odom и clock, не по времени
 публикации Track. После смены карты перезапускайте launch для новой карты.
 
-`ros2/car_control_sim/config/fsds.json`: начальный throttle 0.08, lookahead 5 m,
-width 3 m, depth 15 m. Это НЕ speed controller и не доказанно настроенный гонщик:
-постоянный газ в FSDS может разогнать машину. Начните с короткого заезда и контроля
-скорости; при необходимости уменьшайте throttle. Настройки меняются в JSON, не
-в core math. `stop_on_orange=false` в FSDS намеренно: оранжевые отмечают старт/
-финиш, legacy stop иначе остановит на старте. Для нужного сценария включите его
-в своём JSON. Lightweight/hardware сохраняют прежний stop.
+`ros2/car_control_sim/config/fsds.json`: проверенный throttle 0.20, lookahead 3 m,
+width 3 m, depth 15 m. На этом FSDS 0.08 и 0.18 не запускали автомобиль, а 0.20
+запустил его; это калибровка конкретной PhysX-модели, не значение для Jetson.
+`fsds_max_speed_mps` (default 2.0) и `fsds_speed_brake` (default 0.25) — governor
+только FSDS adapter: core math и lightweight/hardware не меняются. `stop_on_orange=false`
+в FSDS намеренно: оранжевые отмечают старт/финиш. Для нужного сценария включите
+его в своём JSON; lightweight/hardware сохраняют прежний stop policy.
 
 ```bash
-ros2 launch car_control_sim fsds.launch.py host:=localhost controller_config:=/absolute/path/to/config.json
+ros2 launch car_control_sim fsds.launch.py host:=localhost controller_config:=/absolute/path/to/config.json fsds_max_speed_mps:=1.5
 ```
 
 ## Safety и границы гарантий

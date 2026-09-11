@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT/'shared'), str(ROOT/'ros/car_control_ros/src'),
                 str(ROOT/'Jetson Xavier')]
 from car_control_core.core import Controller, Parameters, Command, Bicycle, circle_track, world_to_cones
-from car_control_core.fsds import track_from_message, pose_from_message, vehicle_cones, map_command, validate_host, fill_command
+from car_control_core.fsds import track_from_message, pose_from_message, vehicle_cones, map_command, validate_host, fill_command, speed_limited_command
 from car_control_core.session import Session
 from Code.Autopilot import HardwareAutopilot
 from Code.Config_load import Config
@@ -70,6 +70,11 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(map_command(Command(1.,0.2,0.4)), Command(0.,0.2,0.4))
         self.assertEqual(map_command(Command(math.nan,0.,0.)), Command())
         self.assertEqual(map_command(Command(0.,math.inf,0.)), Command())
+
+    def test_fsds_speed_governor(self):
+        command = Command(0.2, -0.3, 0.)
+        self.assertEqual(speed_limited_command(command, 1.9, 2., 0.25), command)
+        self.assertEqual(speed_limited_command(command, 2., 2., 0.25), Command(0., -0.3, 0.25))
 
     def test_message_stamp(self):
         msg = fill_command(NS(header=NS()), Command(0.1,-0.5,0.), 'stamp')

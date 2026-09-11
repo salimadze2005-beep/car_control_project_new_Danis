@@ -11,7 +11,7 @@ from std_srvs.srv import SetBool
 from nav_msgs.msg import Odometry
 from visualization_msgs.msg import Marker, MarkerArray
 from car_control_core.core import Parameters, Bicycle, circle_track, world_to_cones, Command
-from car_control_core.fsds import track_from_message, vehicle_cones, fill_command, validate_host
+from car_control_core.fsds import track_from_message, vehicle_cones, fill_command, speed_limited_command, validate_host
 from car_control_core.session import Session
 
 
@@ -28,6 +28,9 @@ class ControllerNode(Node):
         enabled = self.declare_parameter('auto_start', False).value
         self.session = Session(parameters, enabled=enabled, require_go=backend == 'fsds')
         self.host = validate_host(self.declare_parameter('host', 'localhost').value)
+        self.tick_period = float(self.declare_parameter('tick_period', 0.02).value)
+        if not 0.01 <= self.tick_period <= 10.0:
+            raise ValueError('tick_period must be between 0.01 and 10 seconds')
         self.create_service(SetBool, '/car/enable', self.enable)
         self.status = self.create_publisher(String, '/car/status', 1)
         self.commands = self.create_publisher(String, '/car/command_debug', 1)
@@ -37,6 +40,11 @@ class ControllerNode(Node):
         self.last_reason = None
         self.last_wall = time.monotonic()
         if backend == 'fsds':
+            self.fsds_speed_mps = 0.
+            self.fsds_max_speed_mps = float(self.declare_parameter('fsds_max_speed_mps', 2.0).value)
+            self.fsds_speed_brake = float(self.declare_parameter('fsds_speed_brake', 0.25).value)
+            if not self.fsds_max_speed_mps > 0 or not 0 <= self.fsds_speed_brake <= 1:
+                raise ValueError('FSDS speed limiter configuration is invalid')
             # Optional dependency: no fs_msgs import in lightweight mode.
             from fs_msgs.msg import Track, GoSignal, ControlCommand
             self.command_type = ControlCommand
@@ -49,7 +57,7 @@ class ControllerNode(Node):
         else:
             self.car, self.track = Bicycle(), circle_track()
         # Explicit steady clock: watchdog must fire even when FSDS /clock stops.
-        self.timer = self.create_timer(0.02, self.tick, clock=Clock(clock_type=ClockType.STEADY_TIME))
+        self.timer = self.create_timer(self.tick_period, self.tick, clock=Clock(clock_type=ClockType.STEADY_TIME))
 
     def enable(self, request, response):
         self.session.enable(request.data)
@@ -64,6 +72,8 @@ class ControllerNode(Node):
         if not self.track:
             return
         try:
+            velocity = msg.twist.twist.linear
+            self.fsds_speed_mps = math.hypot(velocity.x, velocity.y)
             cones = vehicle_cones(self.track, msg, self.session.core.p.max_depth)
             stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
             self.session.observe(cones, stamp, time.monotonic())
@@ -82,13 +92,16 @@ class ControllerNode(Node):
             cones = world_to_cones(self.track, self.car.x, self.car.y, self.car.yaw, self.session.core.p.max_depth)
             self.session.observe(cones, source_now, now)
         command = self.session.tick(now, source_now)
+        transport_command = command
         if self.backend == 'fsds':
-            self.command_pub.publish(fill_command(self.command_type(), command, self.get_clock().now().to_msg()))
+            transport_command = speed_limited_command(
+                command, self.fsds_speed_mps, self.fsds_max_speed_mps, self.fsds_speed_brake)
+            self.command_pub.publish(fill_command(self.command_type(), transport_command, self.get_clock().now().to_msg()))
         else:
             self.car.step(command, min(max(now-self.last_wall, 0.), 0.1))
             self.publish_model()
         self.last_wall = now
-        self.commands.publish(String(data=json.dumps(vars(command))))
+        self.commands.publish(String(data=json.dumps(vars(transport_command))))
         self.status.publish(String(data=json.dumps({'backend': self.backend, 'host': self.host,
                             'enabled': self.session.enabled, 'reason': self.session.reason})))
         if self.last_reason != self.session.reason:

@@ -60,6 +60,15 @@ def map_command(command):
     brake = clamp(command.brake, 0., 1.)
     return Command(0. if brake > 0 else throttle, steering, brake)
 
+def speed_limited_command(command, speed, max_speed, brake):
+    """Apply FSDS drivetrain limits without changing controller-core math."""
+    if not all(math.isfinite(value) for value in (speed, max_speed, brake)) or max_speed <= 0:
+        return Command()
+    command = map_command(command)
+    if speed >= max_speed:
+        return Command(0., command.steering, clamp(brake, 0., 1.))
+    return command
+
 
 def fill_command(message, command, stamp):
     command = map_command(command)
