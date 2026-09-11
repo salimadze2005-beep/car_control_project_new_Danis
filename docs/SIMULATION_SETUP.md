@@ -73,7 +73,9 @@ checkout AirSim/ROS2, проверяет commit/submodules и применяет
 - transient-local Track: upstream публикует трассу один раз, поздний subscriber
   иначе её не получает;
 - исправление origin/cm→m для конусов на мировой оси;
-- watchdog 0.5 s и finite/ranges/brake проверки в штатном command callback.
+- watchdog 0.5 s и finite/ranges/brake проверки в штатном command callback;
+- runtime service `/fsds/manual_mode`: штатный bridge освобождает управление для
+  клавиатуры в manual и снова включает AirSim API control в automatic.
 
 Это тот же `fsds_ros2_bridge`, не новый bridge/протокол/физика. Windows binary
 не модифицируется; сохраняются upstream лицензии. Helper не скачивает Unreal
@@ -210,18 +212,38 @@ networkingMode=mirrored
 
 ```bash
 python3 tools/check_fsds.py --host localhost
-ros2 launch car_control_sim fsds.launch.py
+ros2 launch car_control_sim fsds_drive.launch.py host:=localhost
 ```
 
 Default `host:=localhost` передаётся в штатный параметр bridge `host_ip`.
-Во втором WSL shell из репозитория:
+`fsds_drive.launch.py` намеренно стартует в ручном режиме: сначала поставьте
+машину стрелками примерно вдоль коридора трассы. Затем переключите AUTOPILOT.
+
+Удобнее всего открыть поверх FSDS небольшую Windows-панель. Из PowerShell:
+
+```powershell
+pythonw "\\wsl.localhost\Ubuntu-22.04\home\danis\car_control_project_new_Danis\tools\fsds_control_panel.py"
+```
+
+Кнопки `MANUAL`, `AUTOPILOT`, `STOP` управляют тем же bridge/controller. При
+нажатии любой стрелки во время AUTOPILOT панель сначала отключает controller,
+затем переводит bridge в ручной режим, поэтому две стороны не отправляют команды
+одновременно. Это always-on-top overlay над готовым FSDS binary, а не изменение
+внутри Unreal: если exclusive fullscreen скрывает панель, включите windowed или
+borderless режим.
+
+Эквивалент без панели, во втором WSL shell из репозитория:
 
 ```bash
 source simulation_ws/install/setup.bash
+python3 tools/fsds_mode.py manual  # стрелки управляют машиной
+python3 tools/fsds_mode.py auto    # controller начинает движение
+python3 tools/fsds_mode.py stop    # controller disabled, bridge держит brake
 ros2 topic echo /car/status
 ```
 
-Когда доступны track, odom, clock и GO, в отдельном sourced shell:
+Старый service остаётся доступен, но сам по себе не возвращает API control после
+ручного режима. Поэтому для обычной работы используйте helper/панель выше:
 
 ```bash
 ros2 service call /car/enable std_srvs/srv/SetBool "{data: true}"
@@ -229,22 +251,24 @@ ros2 service call /car/enable std_srvs/srv/SetBool "{data: true}"
 ros2 service call /car/enable std_srvs/srv/SetBool "{data: false}"
 ```
 
-Controller стартует DISABLED и публикует brake. GO от bridge — дополнительный
+Controller стартует DISABLED. В manual команды controller игнорируются bridge;
+в STOP bridge владеет машиной и получает brake. GO от bridge — дополнительный
 heartbeat, не замена пользовательского enable и не аппаратный safety interlock.
 
 Проверенный для WSL2 профиль FSDS использует `bridge_telemetry_period:=0.05`:
 20 Hz для telemetry и controller command. Это необходимо, потому что upstream
 bridge использует однопоточный executor; его штатные 250 Hz odom polling вместе
 с 50 Hz command могут starving callback управления через Windows↔WSL RPC.
-Обычный `fsds.launch.py` использует governor 2 m/s и brake 0.25. Jetson-профиль
-использует target 1 m/s, полный brake, soft zone 1 m/s и ранний brake margin
-0.8 m/s. Core выдаёт тот же нормализованный throttle=1.0, что аппаратный
-`HardwareAutopilot`; `fsds_throttle_scale:=0.20` преобразует его в input PhysX.
-Это калибровка исполнительного адаптера, а не другая математика controller.
+Обычный `fsds.launch.py` использует governor 2 m/s и brake 0.25. Рекомендуемый
+`fsds_drive.launch.py` использует target 2.5 m/s, throttle scale 0.20 и плавный
+пропорциональный brake только при превышении target. На проверенном запуске он
+после начального выбега стабилизировался примерно на 2.40–2.46 m/s без прежнего
+stop-go. Core выдаёт тот же нормализованный throttle=1.0, что аппаратный
+`HardwareAutopilot`; scale преобразует его в input PhysX. Это калибровка
+исполнительного адаптера, а не другая математика controller.
 
 ```bash
-ros2 launch car_control_sim fsds.launch.py host:="$FSDS_HOST" \
-  fsds_max_speed_mps:=1.5 fsds_throttle_scale:=0.20
+ros2 launch car_control_sim fsds_drive.launch.py host:="$FSDS_HOST"
 ```
 
 После изменения исходного JSON запустите `tools/build_ros2.sh` снова или передайте
@@ -258,7 +282,7 @@ WSL (на проверенном ноутбуке `172.21.112.1`), затем п
 ```bash
 FSDS_HOST=$(ip route show default | awk '{print $3; exit}')
 python3 tools/check_fsds.py --host "$FSDS_HOST"
-ros2 launch car_control_sim fsds.launch.py host:="$FSDS_HOST"
+ros2 launch car_control_sim fsds_drive.launch.py host:="$FSDS_HOST"
 ```
 
 Нужно узкое firewall-разрешение для WSL IP, не отключение Firewall.
@@ -274,7 +298,7 @@ ros2 launch car_control_sim fsds.launch.py host:="$FSDS_HOST"
 ```bash
 read -r -p 'FSDS IP/hostname: ' FSDS_HOST
 python3 tools/check_fsds.py --host "$FSDS_HOST"
-ros2 launch car_control_sim fsds.launch.py host:="$FSDS_HOST"
+ros2 launch car_control_sim fsds_drive.launch.py host:="$FSDS_HOST"
 ```
 
 Enable/disable те же. Host — только IP/hostname, без `http://` и `:41451`.
@@ -318,7 +342,7 @@ launcher может отличаться от FSOnline. В облаке огра
 | brake | [0,1]; при brake>0 throttle принудительно 0 |
 | non-finite command | throttle=0, steering=0, brake=1 |
 
-Используется прежний `world_to_cones`, FOV 90°, дальность из config. Неверные frames
+Используется прежний `world_to_cones`, а FOV и дальность задаёт launch. Неверные frames
 или quaternion приводят к остановке. Проекция плоская, не проверка склонов/roll/pitch.
 Track — статическая карта; freshness проверяется по odom и clock, не по времени
 публикации Track. После смены карты перезапускайте launch для новой карты.
@@ -337,6 +361,32 @@ width 3 m, depth 15 m. На этом FSDS команды 0.10, 0.15 и 0.18 не
 ros2 launch car_control_sim fsds.launch.py host:=localhost controller_config:=/absolute/path/to/config.json fsds_max_speed_mps:=1.5
 ```
 
+## Практический FSDS drive и повторный захват трассы
+
+Для ручной постановки и затем автономного заезда используйте
+`fsds_drive.launch.py`. Он сохраняет shared `Controller`, но задаёт параметры
+виртуальной полноразмерной машины и ground-truth sensor adapter:
+
+- дальность 15 m и FOV 140° вместо Jetson baseline 4 m/90°;
+- не более шести ближайших конусов каждого цвета, 15 observations/s и 67 ms delay;
+- ширина коридора 3 m, lookahead 3 m;
+- оранжевые стартовые конусы не останавливают controller;
+- target 2.5 m/s, throttle scale 0.20, soft zone 1.5 m и плавный overspeed brake.
+
+После ручного отъезда направьте нос машины примерно вдоль трассы и нажмите
+AUTOPILOT. Конусы могут быть не прямо у бампера: расширенный adapter снова найдёт
+их в пределах 15 m/140°. Если все синие и жёлтые конусы остались сзади или машина
+стоит поперёк/вне трассы, безопасное состояние `no_usable_cones` ожидаемо —
+controller не должен угадывать трассу без наблюдений.
+
+```bash
+ros2 launch car_control_sim fsds_drive.launch.py host:="$FSDS_HOST"
+```
+
+Точный профиль текущего Jetson-кода оставлен отдельно в
+`fsds_jetson.launch.py` для сравнения и калибровки, а не для удобного быстрого
+заезда в PhysX.
+
 ## Jetson baseline и stress simulation
 
 Обычный `fsds.launch.py` остаётся ideal ground-truth режимом. Профиль
@@ -354,11 +404,11 @@ ros2 launch car_control_sim fsds.launch.py host:=localhost controller_config:=/a
 исправления Jetson pipeline включите ту же коррекцию в симуляции параметром
 `sensor_camera_offset_x_m:=-0.06`.
 
-`fsds_max_speed_mps` — порог governor, а не гарантированный физический максимум.
+`fsds_max_speed_mps` — target governor, а не гарантированный физический максимум.
 У полноразмерного TechnionCar есть порог статического трения: 0.18 газа ещё не
 трогает машину, а 0.20 вместе с WSL/RPC/telemetry delay даёт короткий выбег примерно
-до 2 m/s даже при target 1 m/s. Поэтому smoke ceiling 2.5 m/s проверяет отсутствие
-неконтролируемого разгона, но не объявляет модель динамически эквивалентной
+до 2 m/s даже при target 1 m/s. Поэтому Jetson baseline не объявляется динамически
+эквивалентным
 маленькой машине. Для переноса speed tuning нужны логи реального разгона/торможения.
 
 Оранжевая остановка в baseline выключена намеренно: штатные FSDS-трассы используют
@@ -452,17 +502,18 @@ python3 tests/ros2_lightweight.py
 python3 tests/ros2_graph.py  # требует сгенерированный upstream fs_msgs
 ```
 
-При запущенных Windows FSDS и `fsds_jetson.launch.py` безопасный motion smoke:
+При запущенных Windows FSDS и `fsds_drive.launch.py` безопасный motion smoke:
 
 ```bash
 python3 tests/fsds_smoke.py
 ```
 
 Он требует disabled+brake до старта, на восемь секунд включает controller,
-проверяет движение, throttle и runaway ceiling 2.5 m/s, а в `finally` всегда
+проверяет движение, throttle и runaway ceiling 4.0 m/s, а в `finally` всегда
 вызывает disable и проверяет финальный полный brake. Для диагностики добавьте
-`--trace`; уменьшенный ceiling можно задавать вручную, но текущая PhysX-модель
-не гарантирует 1.5 m/s из-за описанного выше выбега.
+`--trace`. В двух 15-секундных локальных проверках: 12.987–13.649 m, peak
+3.504–3.690 m/s и затем устойчивая скорость около 2.40–2.46 m/s; GUI/карта и
+начальное положение всё ещё влияют на результат.
 
 ROS1 compatibility в отдельной Noetic/Ubuntu 20.04 среде:
 
@@ -478,8 +529,9 @@ catkin_make install
 Ручная FSDS приёмка (что ещё остаётся проверить):
 
 1. GUI v2.2.0, settings/FSCar/GSS, TCP check успешно, launch без RPC errors.
-2. Сначала проехать ideal `fsds.launch.py`, затем на скорости не выше 1 m/s
-   повторить `fsds_jetson.launch.py`; stress включать только после baseline.
+2. Ручной постановкой проверить MANUAL, затем AUTOPILOT в `fsds_drive.launch.py`;
+   стрелка во время автопилота должна мгновенно вернуть MANUAL. Только затем
+   сравнивать с точным `fsds_jetson.launch.py`; stress включать после baseline.
 3. Проверить Track (также late subscriber), odom, clock, GO:
    `ros2 topic echo /fsds/testing_only/track --once --qos-durability transient_local`.
 4. До enable brake=1; после enable короткий заезд, визуально проверить цвета,
@@ -496,6 +548,9 @@ catkin_make install
   Helper проверяет только TCP, не версию протокола и не readiness FSDS.
 - `fs_msgs`/bridge not found: build нужен с `--fsds`, source нужного install;
   не смешивайте ROS1 environment с ROS2.
+- `/fsds/manual_mode` unavailable: внешний FSDS checkout собран без актуального
+  project patch; повторите `bash tools/build_ros2.sh --fsds "$HOME/fsds-v2.2.0"`
+  и заново source `simulation_ws/install/setup.bash`.
 - Нет Track: competition_mode=false, namespace `/fsds`, нужен QoS patch. После
   смены карты перезапустите bridge. Не исправляйте это изменением core.
 - `stale_or_no_data`: GSS/clock, odom source/frames. При
@@ -503,8 +558,9 @@ catkin_make install
 - Warning про nodes с одинаковым именем или нестабильные команды: одновременно
   запущены несколько `fsds.launch.py`/`fsds_jetson.launch.py`. Сначала disable,
   корректно остановите лишний launch и оставьте один controller/bridge.
-- `no_usable_cones`: вне трассы/FOV/дальности или неверный origin; сначала reset
-  FSDS и новая Track, потом настройка geometry.
+- `no_usable_cones`: вне трассы/FOV/дальности или неверный origin; используйте
+  `fsds_drive.launch.py`, направьте машину вдоль трассы, затем AUTOPILOT. Если
+  Track сменился, перезапустите launch; потом проверяйте geometry/origin.
 - Build OOM: CMAKE_BUILD_PARALLEL_LEVEL=2; UE assets для bridge не нужны.
 - Patch не применяется: проверьте pin и локальные правки upstream; helper их не
   сбрасывает. Выберите новый внешний каталог.

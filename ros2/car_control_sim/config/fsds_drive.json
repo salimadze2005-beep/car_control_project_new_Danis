@@ -1,0 +1,17 @@
+{
+  "track_width": 3.0,
+  "lookahead_distance": 3.0,
+  "min_depth": 0.1,
+  "max_depth": 15.0,
+  "lateral_limit": 8.0,
+  "kp_gain": 0.8,
+  "ki_gain": 0.02,
+  "kd_gain": 0.08,
+  "max_integral": 1.5,
+  "ema_alpha": 0.5,
+  "max_steering_output": 0.7,
+  "min_dt": 0.001,
+  "throttle": 1.0,
+  "stop_on_orange": false,
+  "stop_cone_z_threshold": 0.5
+}

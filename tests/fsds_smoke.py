@@ -72,9 +72,9 @@ def main(argv=None):
     parser.add_argument('--seconds', type=float, default=8.0)
     parser.add_argument('--minimum-distance', type=float, default=0.5)
     parser.add_argument(
-        '--maximum-speed', type=float, default=2.5,
-        help='runaway ceiling, not the FSDS governor target (default: 2.5 m/s)')
-    parser.add_argument('--maximum-command-throttle', type=float, default=0.21)
+        '--maximum-speed', type=float, default=4.0,
+        help='runaway ceiling, not the FSDS governor target (default: 4.0 m/s)')
+    parser.add_argument('--maximum-command-throttle', type=float, default=0.31)
     parser.add_argument('--trace', action='store_true')
     args = parser.parse_args(argv)
     if (args.seconds <= 0 or args.minimum_distance < 0 or args.maximum_speed <= 0

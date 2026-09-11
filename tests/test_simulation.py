@@ -91,6 +91,15 @@ class ContractTests(unittest.TestCase):
                          Command(0., -0.3, 1.))
         self.assertEqual(speed_limited_command(command, 0., 1., 1., 0.2, 1., 1.),
                          Command())
+        self.assertEqual(speed_limited_command(
+            command, 2., 2., 1., 0.3, 1., 0., 1.),
+            Command(0., -0.3, 0.))
+        proportional_brake = speed_limited_command(
+            command, 2.5, 2., 1., 0.3, 1., 0., 1.)
+        self.assertEqual(proportional_brake, Command(0., -0.3, 0.5))
+        self.assertEqual(speed_limited_command(
+            command, 3.5, 2., 1., 0.3, 1., 0., 1.),
+            Command(0., -0.3, 1.))
 
     def test_jetson_profile_matches_main(self):
         profile = json.loads((ROOT/'ros2/car_control_sim/config/fsds_jetson.json').read_text())
@@ -104,6 +113,18 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(profile['throttle'], 1.0)
         # FSDS places orange cones at start/finish; Main stops on orange implicitly.
         self.assertFalse(profile['stop_on_orange'])
+
+    def test_drive_profile_reacquires_distant_cones_and_ignores_start_orange(self):
+        profile = json.loads(
+            (ROOT/'ros2/car_control_sim/config/fsds_drive.json').read_text())
+        controller = Controller(Parameters(**profile))
+        command = controller.step([
+            (-1.5, 10., 'blue'), (1.5, 10., 'yellow'),
+            (0., 0.3, 'orange'),
+        ], 0.067)
+        self.assertGreater(command.throttle, 0.)
+        self.assertEqual(command.brake, 0.)
+        self.assertEqual(command.steering, 0.)
 
     def test_jetson_sensor_offsets_rate_limit_and_latency(self):
         sensor = ConeSensor(SensorParameters(

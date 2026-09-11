@@ -67,9 +67,12 @@ class ControllerNode(Node):
             self.fsds_throttle_scale = float(self.declare_parameter('fsds_throttle_scale', 0.2).value)
             self.fsds_speed_soft_zone_mps = float(self.declare_parameter('fsds_speed_soft_zone_mps', 0.0).value)
             self.fsds_speed_brake_margin_mps = float(self.declare_parameter('fsds_speed_brake_margin_mps', 0.0).value)
+            self.fsds_overspeed_brake_zone_mps = float(
+                self.declare_parameter('fsds_overspeed_brake_zone_mps', 0.0).value)
             if (not self.fsds_max_speed_mps > 0 or not 0 <= self.fsds_speed_brake <= 1
                     or not 0 <= self.fsds_throttle_scale <= 1
                     or self.fsds_speed_soft_zone_mps < 0
+                    or self.fsds_overspeed_brake_zone_mps < 0
                     or not 0 <= self.fsds_speed_brake_margin_mps < self.fsds_max_speed_mps):
                 raise ValueError('FSDS speed limiter configuration is invalid')
             # Optional dependency: no fs_msgs import in lightweight mode.
@@ -131,7 +134,8 @@ class ControllerNode(Node):
             transport_command = speed_limited_command(
                 command, self.fsds_speed_mps, self.fsds_max_speed_mps,
                 self.fsds_speed_brake, self.fsds_throttle_scale,
-                self.fsds_speed_soft_zone_mps, self.fsds_speed_brake_margin_mps)
+                self.fsds_speed_soft_zone_mps, self.fsds_speed_brake_margin_mps,
+                self.fsds_overspeed_brake_zone_mps)
             self.command_pub.publish(fill_command(self.command_type(), transport_command, self.get_clock().now().to_msg()))
         else:
             self.car.step(command, min(max(now-self.last_wall, 0.), 0.1))
