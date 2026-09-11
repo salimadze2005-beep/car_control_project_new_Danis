@@ -3,6 +3,8 @@ __pycache__/
 .idea/
 .vscode/
 models/
+*.onnx
+*.engine
 # Log files
 *.log
 car_control.log

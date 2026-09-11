@@ -1,0 +1,23 @@
+{
+  "source_filename": "best.onnx",
+  "sha256": "063a90fa56e01fa405a810d5550b76ddc04fc51ede9885de57b6611b7bb49fde",
+  "size_bytes": 12266793,
+  "producer": "Ultralytics 8.4.16",
+  "license": "AGPL-3.0",
+  "task": "detect",
+  "input": {
+    "name": "images",
+    "shape": [1, 3, 640, 640],
+    "dtype": "float32",
+    "dynamic": false
+  },
+  "output": {
+    "name": "output0",
+    "nms_embedded": false
+  },
+  "classes": {
+    "0": "yellow",
+    "1": "orange",
+    "2": "blue"
+  }
+}

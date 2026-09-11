@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import math
 from pathlib import Path
 import sys
@@ -9,8 +10,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT/'shared'), str(ROOT/'ros/car_control_ros/src'),
                 str(ROOT/'Jetson Xavier')]
 from car_control_core.core import Controller, Parameters, Command, Bicycle, circle_track, world_to_cones
-from car_control_core.fsds import track_from_message, pose_from_message, vehicle_cones, map_command, validate_host, fill_command
+from car_control_core.fsds import track_from_message, pose_from_message, vehicle_cones, map_command, validate_host, fill_command, speed_limited_command
 from car_control_core.session import Session
+from car_control_core.sensor import ConeSensor, SensorParameters
 from Code.Autopilot import HardwareAutopilot
 from Code.Config_load import Config
 import car_control_ros.core as ros1
@@ -70,6 +72,89 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(map_command(Command(1.,0.2,0.4)), Command(0.,0.2,0.4))
         self.assertEqual(map_command(Command(math.nan,0.,0.)), Command())
         self.assertEqual(map_command(Command(0.,math.inf,0.)), Command())
+
+    def test_fsds_speed_governor(self):
+        command = Command(1., -0.3, 0.)
+        self.assertEqual(speed_limited_command(command, 1.9, 2., 0.25, 0.2),
+                         Command(0.2, -0.3, 0.))
+        self.assertEqual(speed_limited_command(command, 2., 2., 0.25, 0.2),
+                         Command(0., -0.3, 0.25))
+        soft_command = speed_limited_command(command, 0.8, 1., 1., 0.2, 0.4)
+        self.assertAlmostEqual(soft_command.throttle, 0.1)
+        self.assertEqual((soft_command.steering, soft_command.brake), (-0.3, 0.))
+        softer_command = speed_limited_command(command, 0.9, 1., 1., 0.2, 0.4)
+        self.assertAlmostEqual(softer_command.throttle, 0.05)
+        self.assertEqual((softer_command.steering, softer_command.brake), (-0.3, 0.))
+        self.assertEqual(speed_limited_command(command, 1., 2., 0.25, math.nan), Command())
+        self.assertEqual(speed_limited_command(command, 1., 2., 0.25, 0.2, -1.), Command())
+        self.assertEqual(speed_limited_command(command, 0.2, 1., 1., 0.2, 1., 0.8),
+                         Command(0., -0.3, 1.))
+        self.assertEqual(speed_limited_command(command, 0., 1., 1., 0.2, 1., 1.),
+                         Command())
+        self.assertEqual(speed_limited_command(
+            command, 2., 2., 1., 0.3, 1., 0., 1.),
+            Command(0., -0.3, 0.))
+        proportional_brake = speed_limited_command(
+            command, 2.5, 2., 1., 0.3, 1., 0., 1.)
+        self.assertEqual(proportional_brake, Command(0., -0.3, 0.5))
+        self.assertEqual(speed_limited_command(
+            command, 3.5, 2., 1., 0.3, 1., 0., 1.),
+            Command(0., -0.3, 1.))
+
+    def test_jetson_profile_matches_main(self):
+        profile = json.loads((ROOT/'ros2/car_control_sim/config/fsds_jetson.json').read_text())
+        hardware = Config()
+        names = ('track_width', 'lookahead_distance', 'min_depth', 'max_depth',
+                 'kp_gain', 'ki_gain', 'kd_gain', 'max_integral', 'ema_alpha',
+                 'max_steering_output', 'min_dt', 'stop_cone_z_threshold')
+        for name in names:
+            self.assertEqual(profile[name], getattr(hardware, name), name)
+        self.assertEqual(profile['lateral_limit'], 2.5)
+        self.assertEqual(profile['throttle'], 1.0)
+        # FSDS places orange cones at start/finish; Main stops on orange implicitly.
+        self.assertFalse(profile['stop_on_orange'])
+
+    def test_drive_profile_reacquires_distant_cones_and_ignores_start_orange(self):
+        profile = json.loads(
+            (ROOT/'ros2/car_control_sim/config/fsds_drive.json').read_text())
+        controller = Controller(Parameters(**profile))
+        command = controller.step([
+            (-1.5, 10., 'blue'), (1.5, 10., 'yellow'),
+            (0., 0.3, 'orange'),
+        ], 0.067)
+        self.assertGreater(command.throttle, 0.)
+        self.assertEqual(command.brake, 0.)
+        self.assertEqual(command.steering, 0.)
+
+    def test_jetson_sensor_offsets_rate_limit_and_latency(self):
+        sensor = ConeSensor(SensorParameters(
+            rate_hz=15., latency_s=0.067, camera_offset_x_m=-0.06,
+            camera_offset_z_m=0.10, min_depth_m=0.1, max_depth_m=4.,
+            max_per_color=1, seed=2005))
+        cones = [(1., 2., 'blue'), (2., 3., 'blue'), (-1., 2., 'yellow')]
+        self.assertTrue(sensor.capture(cones, 10., 1.))
+        self.assertFalse(sensor.capture(cones, 10.02, 1.02))
+        self.assertIsNone(sensor.ready(1.066))
+        observation = sensor.ready(1.067)
+        self.assertEqual(observation.source_stamp, 10.)
+        self.assertEqual(observation.received_stamp, 1.)
+        self.assertEqual(observation.cones,
+                         ((1.06, 1.9, 'blue'), (-0.94, 1.9, 'yellow')))
+
+    def test_sensor_noise_is_deterministic_and_dropout_can_stop(self):
+        parameters = SensorParameters(
+            lateral_std_m=0.02, depth_relative_std=0.05,
+            min_depth_m=0.1, max_depth_m=4., seed=7)
+        first, second = ConeSensor(parameters), ConeSensor(parameters)
+        cones = [(0., 2., 'blue'), (0., 2., 'yellow')]
+        first.capture(cones, 1., 1.)
+        second.capture(cones, 1., 1.)
+        self.assertEqual(first.ready(1.), second.ready(1.))
+
+        empty = ConeSensor(SensorParameters(
+            dropout_probability=1., min_depth_m=.1, max_depth_m=4.))
+        empty.capture(cones, 1., 1.)
+        self.assertEqual(empty.ready(1.).cones, ())
 
     def test_message_stamp(self):
         msg = fill_command(NS(header=NS()), Command(0.1,-0.5,0.), 'stamp')

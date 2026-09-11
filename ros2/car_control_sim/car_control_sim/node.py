@@ -11,8 +11,9 @@ from std_srvs.srv import SetBool
 from nav_msgs.msg import Odometry
 from visualization_msgs.msg import Marker, MarkerArray
 from car_control_core.core import Parameters, Bicycle, circle_track, world_to_cones, Command
-from car_control_core.fsds import track_from_message, vehicle_cones, fill_command, validate_host
+from car_control_core.fsds import track_from_message, vehicle_cones, fill_command, speed_limited_command, validate_host
 from car_control_core.session import Session
+from car_control_core.sensor import ConeSensor, SensorParameters
 
 
 class ControllerNode(Node):
@@ -26,8 +27,13 @@ class ControllerNode(Node):
         values = json.loads(Path(config_path).read_text()) if config_path else {}
         parameters = Parameters(**values)
         enabled = self.declare_parameter('auto_start', False).value
-        self.session = Session(parameters, enabled=enabled, require_go=backend == 'fsds')
+        data_timeout = float(self.declare_parameter('data_timeout', 0.4).value)
+        self.session = Session(parameters, enabled=enabled, timeout=data_timeout,
+                               require_go=backend == 'fsds')
         self.host = validate_host(self.declare_parameter('host', 'localhost').value)
+        self.tick_period = float(self.declare_parameter('tick_period', 0.02).value)
+        if not 0.01 <= self.tick_period <= 10.0:
+            raise ValueError('tick_period must be between 0.01 and 10 seconds')
         self.create_service(SetBool, '/car/enable', self.enable)
         self.status = self.create_publisher(String, '/car/status', 1)
         self.commands = self.create_publisher(String, '/car/command_debug', 1)
@@ -37,6 +43,38 @@ class ControllerNode(Node):
         self.last_reason = None
         self.last_wall = time.monotonic()
         if backend == 'fsds':
+            sensor_parameters = SensorParameters(
+                rate_hz=float(self.declare_parameter('sensor_rate_hz', 0.0).value),
+                latency_s=float(self.declare_parameter('sensor_latency_s', 0.0).value),
+                dropout_probability=float(self.declare_parameter('sensor_dropout_probability', 0.0).value),
+                lateral_std_m=float(self.declare_parameter('sensor_lateral_std_m', 0.0).value),
+                depth_std_m=float(self.declare_parameter('sensor_depth_std_m', 0.0).value),
+                depth_relative_std=float(self.declare_parameter('sensor_depth_relative_std', 0.0).value),
+                camera_offset_x_m=float(self.declare_parameter('sensor_camera_offset_x_m', 0.0).value),
+                camera_offset_z_m=float(self.declare_parameter('sensor_camera_offset_z_m', 0.0).value),
+                min_depth_m=parameters.min_depth,
+                max_depth_m=parameters.max_depth,
+                max_per_color=int(self.declare_parameter('sensor_max_per_color', 0).value),
+                seed=int(self.declare_parameter('sensor_seed', 0).value),
+            )
+            self.sensor = ConeSensor(sensor_parameters)
+            self.sensor_fov = math.radians(float(self.declare_parameter('sensor_fov_deg', 90.0).value))
+            if not 0 < self.sensor_fov <= math.pi:
+                raise ValueError('sensor_fov_deg must be in (0, 180]')
+            self.fsds_speed_mps = 0.
+            self.fsds_max_speed_mps = float(self.declare_parameter('fsds_max_speed_mps', 2.0).value)
+            self.fsds_speed_brake = float(self.declare_parameter('fsds_speed_brake', 0.25).value)
+            self.fsds_throttle_scale = float(self.declare_parameter('fsds_throttle_scale', 0.2).value)
+            self.fsds_speed_soft_zone_mps = float(self.declare_parameter('fsds_speed_soft_zone_mps', 0.0).value)
+            self.fsds_speed_brake_margin_mps = float(self.declare_parameter('fsds_speed_brake_margin_mps', 0.0).value)
+            self.fsds_overspeed_brake_zone_mps = float(
+                self.declare_parameter('fsds_overspeed_brake_zone_mps', 0.0).value)
+            if (not self.fsds_max_speed_mps > 0 or not 0 <= self.fsds_speed_brake <= 1
+                    or not 0 <= self.fsds_throttle_scale <= 1
+                    or self.fsds_speed_soft_zone_mps < 0
+                    or self.fsds_overspeed_brake_zone_mps < 0
+                    or not 0 <= self.fsds_speed_brake_margin_mps < self.fsds_max_speed_mps):
+                raise ValueError('FSDS speed limiter configuration is invalid')
             # Optional dependency: no fs_msgs import in lightweight mode.
             from fs_msgs.msg import Track, GoSignal, ControlCommand
             self.command_type = ControlCommand
@@ -49,7 +87,7 @@ class ControllerNode(Node):
         else:
             self.car, self.track = Bicycle(), circle_track()
         # Explicit steady clock: watchdog must fire even when FSDS /clock stops.
-        self.timer = self.create_timer(0.02, self.tick, clock=Clock(clock_type=ClockType.STEADY_TIME))
+        self.timer = self.create_timer(self.tick_period, self.tick, clock=Clock(clock_type=ClockType.STEADY_TIME))
 
     def enable(self, request, response):
         self.session.enable(request.data)
@@ -58,15 +96,19 @@ class ControllerNode(Node):
 
     def track_received(self, msg):
         self.track = track_from_message(msg)
+        self.sensor.reset()
         self.get_logger().info('FSDS track received: %d known cones' % len(self.track))
 
     def odom_received(self, msg):
         if not self.track:
             return
         try:
-            cones = vehicle_cones(self.track, msg, self.session.core.p.max_depth)
+            velocity = msg.twist.twist.linear
+            self.fsds_speed_mps = math.hypot(velocity.x, velocity.y)
+            cones = vehicle_cones(self.track, msg, self.session.core.p.max_depth,
+                                  self.sensor_fov)
             stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
-            self.session.observe(cones, stamp, time.monotonic())
+            self.sensor.capture(cones, stamp, time.monotonic())
         except ValueError as error:
             self.session.sample = None
             self.get_logger().error(str(error))
@@ -81,14 +123,25 @@ class ControllerNode(Node):
         if self.backend == 'lightweight':
             cones = world_to_cones(self.track, self.car.x, self.car.y, self.car.yaw, self.session.core.p.max_depth)
             self.session.observe(cones, source_now, now)
+        else:
+            observation = self.sensor.ready(now)
+            if observation is not None:
+                self.session.observe(observation.cones, observation.source_stamp,
+                                     observation.received_stamp)
         command = self.session.tick(now, source_now)
+        transport_command = command
         if self.backend == 'fsds':
-            self.command_pub.publish(fill_command(self.command_type(), command, self.get_clock().now().to_msg()))
+            transport_command = speed_limited_command(
+                command, self.fsds_speed_mps, self.fsds_max_speed_mps,
+                self.fsds_speed_brake, self.fsds_throttle_scale,
+                self.fsds_speed_soft_zone_mps, self.fsds_speed_brake_margin_mps,
+                self.fsds_overspeed_brake_zone_mps)
+            self.command_pub.publish(fill_command(self.command_type(), transport_command, self.get_clock().now().to_msg()))
         else:
             self.car.step(command, min(max(now-self.last_wall, 0.), 0.1))
             self.publish_model()
         self.last_wall = now
-        self.commands.publish(String(data=json.dumps(vars(command))))
+        self.commands.publish(String(data=json.dumps(vars(transport_command))))
         self.status.publish(String(data=json.dumps({'backend': self.backend, 'host': self.host,
                             'enabled': self.session.enabled, 'reason': self.session.reason})))
         if self.last_reason != self.session.reason:

@@ -34,10 +34,13 @@ def prepare(destination):
             raise ValueError('Unexpected submodule revision: ' + path)
     patch = ROOT / 'simulation' / lock['patch']
     # Upstream blobs mix CRLF/LF. Context matching must work on Linux and Windows.
-    check = subprocess.run(['git', 'apply', '--ignore-space-change', '--reverse', '--check', str(patch)], cwd=destination, capture_output=True)
+    apply_options = ['--unidiff-zero', '--ignore-space-change']
+    check = subprocess.run(
+        ['git', 'apply', *apply_options, '--reverse', '--check', str(patch)],
+        cwd=destination, capture_output=True)
     if check.returncode:
-        git('apply', '--ignore-space-change', '--check', patch, cwd=destination)
-        git('apply', '--ignore-space-change', patch, cwd=destination)
+        git('apply', *apply_options, '--check', patch, cwd=destination)
+        git('apply', *apply_options, patch, cwd=destination)
     print('Pinned FSDS ROS2 sources ready:', destination)
     print('Build on Ubuntu 22.04 / Humble; see docs/SIMULATION_SETUP.md.')
     return destination

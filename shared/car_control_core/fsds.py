@@ -61,6 +61,34 @@ def map_command(command):
     return Command(0. if brake > 0 else throttle, steering, brake)
 
 
+def speed_limited_command(command, speed, max_speed, brake, throttle_scale=1.0,
+                          soft_zone=0.0, brake_margin=0.0,
+                          overspeed_brake_zone=0.0):
+    """Apply FSDS actuator calibration without changing controller-core math."""
+    values = (speed, max_speed, brake, throttle_scale, soft_zone,
+              brake_margin, overspeed_brake_zone)
+    if (not all(math.isfinite(value) for value in values) or max_speed <= 0
+            or not 0 <= throttle_scale <= 1 or soft_zone < 0
+            or overspeed_brake_zone < 0
+            or not 0 <= brake_margin < max_speed):
+        return Command()
+    command = map_command(command)
+    if brake_margin > 0 and speed >= max_speed - brake_margin:
+        return Command(0., command.steering, clamp(brake, 0., 1.))
+    if speed >= max_speed:
+        if overspeed_brake_zone > 0:
+            braking = clamp((speed - max_speed) / overspeed_brake_zone, 0., 1.)
+            return Command(0., command.steering, clamp(brake, 0., 1.) * braking)
+        return Command(0., command.steering, clamp(brake, 0., 1.))
+    throttle = command.throttle * throttle_scale
+    if soft_zone > 0:
+        start = max(0.0, max_speed - soft_zone)
+        width = max_speed - start
+        if speed > start and width > 0:
+            throttle *= clamp((max_speed - speed) / width, 0.0, 1.0)
+    return Command(throttle, command.steering, command.brake)
+
+
 def fill_command(message, command, stamp):
     command = map_command(command)
     message.header.stamp = stamp
