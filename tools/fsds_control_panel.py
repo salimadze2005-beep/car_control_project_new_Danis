@@ -92,8 +92,9 @@ def main(argv=None):
     root = tk.Tk()
     root.title('FSDS CONTROL')
     root.attributes('-topmost', True)
-    root.resizable(False, False)
+    root.resizable(True, True)
     width, height = 420, 650
+    root.minsize(360, 500)
     root.geometry('%dx%d+%d+30' % (width, height, root.winfo_screenwidth() - width - 30))
 
     result_queue = queue.Queue()
@@ -160,18 +161,23 @@ def main(argv=None):
         run_async('speed', invocation)
 
     tk.Scale(root, from_=0.1, to=15.0, resolution=0.1, orient='horizontal',
-             variable=speed, label='Autopilot target (m/s)', length=360).pack()
+             variable=speed, label='Autopilot target (m/s)', length=360).pack(
+                 fill='x', padx=12)
     tk.Scale(root, from_=0.05, to=0.50, resolution=0.01, orient='horizontal',
-             variable=throttle_scale, label='Maximum FSDS throttle', length=360).pack()
+             variable=throttle_scale, label='Maximum FSDS throttle', length=360).pack(
+                 fill='x', padx=12)
     tk.Scale(root, from_=0.0, to=3.0, resolution=0.05, orient='horizontal',
              variable=steering_gain,
-             label='Turn sharpness / steering gain (Kp)', length=380).pack()
+             label='Turn sharpness / steering gain (Kp)', length=380).pack(
+                 fill='x', padx=12)
     tk.Scale(root, from_=0.05, to=1.0, resolution=0.05, orient='horizontal',
              variable=steering_response,
-             label='Turn response speed (EMA; higher = faster)', length=380).pack()
+             label='Turn response speed (EMA; higher = faster)', length=380).pack(
+                 fill='x', padx=12)
     tk.Scale(root, from_=0.1, to=1.0, resolution=0.05, orient='horizontal',
              variable=steering_limit,
-             label='Maximum steering command', length=380).pack()
+             label='Maximum steering command', length=380).pack(
+                 fill='x', padx=12)
     tk.Button(root, text='Apply driving settings', command=apply_speed).pack()
     tk.Label(root, textvariable=speed_status, wraplength=340, font=('Segoe UI', 8)).pack()
     tk.Label(root, text='Perception: FSDS ground truth cones',
