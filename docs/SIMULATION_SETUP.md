@@ -606,7 +606,11 @@ catkin_make install
   launch. Оставьте FSDS открытым на трассе; после сообщения `Connected` нажмите
   `AUTOPILOT` ещё раз. Helper дождётся свежих cones/odom и безопасно сбросит
   `connection_fault_reenable_required`; без свежих данных controller останется
-  disabled.
+  disabled. Также проверьте диспетчер задач: одновременно должны работать ровно
+  по одному `FSDS.exe` и `Blocks.exe`. Две копии могут слушать порт 41451, при
+  этом TCP check проходит, но bridge попадает в старый зависший RPC server и
+  получает timeout. Windows-панель проверяет это перед `AUTOPILOT`, показывает
+  PID дубликатов и не включает движение, пока старая копия не закрыта.
 - `no_usable_cones`: вне трассы/FOV/дальности или неверный origin; используйте
   `fsds_drive.launch.py`, направьте машину вдоль трассы, затем AUTOPILOT. Если
   Track сменился, перезапустите launch; потом проверяйте geometry/origin.
