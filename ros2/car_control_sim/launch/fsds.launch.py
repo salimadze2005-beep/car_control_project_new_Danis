@@ -17,6 +17,13 @@ def setup(context):
     if manual_text not in ('true', 'false'):
         raise ValueError('initial_manual_mode must be true or false')
     initial_manual_mode = manual_text == 'true'
+    camera_text = LaunchConfiguration('enable_front_camera').perform(context).strip().lower()
+    if camera_text not in ('true', 'false'):
+        raise ValueError('enable_front_camera must be true or false')
+    enable_front_camera = camera_text == 'true'
+    camera_framerate = float(LaunchConfiguration('camera_framerate').perform(context))
+    if not 1 <= camera_framerate <= 60:
+        raise ValueError('camera_framerate must be within 1..60')
     if not 0.01 <= bridge_telemetry_period <= 10.0:
         raise ValueError('bridge_telemetry_period must be between 0.01 and 10 seconds')
 
@@ -29,6 +36,18 @@ def setup(context):
         LaunchConfiguration('fsds_speed_brake_margin_mps').perform(context))
     fsds_overspeed_brake_zone_mps = float(
         LaunchConfiguration('fsds_overspeed_brake_zone_mps').perform(context))
+    fsds_speed_kp = float(LaunchConfiguration('fsds_speed_kp').perform(context))
+    fsds_speed_ki = float(LaunchConfiguration('fsds_speed_ki').perform(context))
+    fsds_speed_integral_limit = float(
+        LaunchConfiguration('fsds_speed_integral_limit').perform(context))
+    fsds_speed_brake_gain = float(
+        LaunchConfiguration('fsds_speed_brake_gain').perform(context))
+    fsds_speed_breakaway_throttle = float(
+        LaunchConfiguration('fsds_speed_breakaway_throttle').perform(context))
+    fsds_longitudinal_mode = LaunchConfiguration(
+        'fsds_longitudinal_mode').perform(context).strip().lower()
+    if fsds_longitudinal_mode not in ('legacy', 'pi'):
+        raise ValueError('fsds_longitudinal_mode must be legacy or pi')
     if not fsds_max_speed_mps > 0:
         raise ValueError('fsds_max_speed_mps must be positive')
     if not 0 <= fsds_speed_brake <= 1:
@@ -61,8 +80,8 @@ def setup(context):
     # The upstream bridge has a single-threaded executor. Its 250 Hz default
     # telemetry polling can starve control callbacks over the WSL<->Windows RPC
     # path, so keep telemetry at 20 Hz by default.
-    # Official executable, native host_ip RPC path. No replacement bridge/camera nodes.
-    return [
+    # Official executables and native host_ip RPC path.
+    nodes = [
         Node(package='fsds_ros2_bridge', executable='fsds_ros2_bridge', namespace='fsds',
              name='ros_bridge', output='screen', parameters=[{'host_ip': host, 'timeout': 2.0,
                  'competition_mode': False, 'manual_mode': initial_manual_mode,
@@ -81,7 +100,21 @@ def setup(context):
                           'fsds_speed_soft_zone_mps': fsds_speed_soft_zone_mps,
                           'fsds_speed_brake_margin_mps': fsds_speed_brake_margin_mps,
                           'fsds_overspeed_brake_zone_mps': fsds_overspeed_brake_zone_mps,
+                          'fsds_speed_kp': fsds_speed_kp,
+                          'fsds_speed_ki': fsds_speed_ki,
+                          'fsds_speed_integral_limit': fsds_speed_integral_limit,
+                          'fsds_speed_brake_gain': fsds_speed_brake_gain,
+                          'fsds_speed_breakaway_throttle': fsds_speed_breakaway_throttle,
+                          'fsds_longitudinal_mode': fsds_longitudinal_mode,
                           **sensor_values}])]
+    if enable_front_camera:
+        nodes.append(Node(
+            package='fsds_ros2_bridge', executable='fsds_ros2_bridge_camera',
+            namespace='fsds/camera', name='front', output='screen',
+            parameters=[{'camera_name': 'front', 'depthcamera': False,
+                         'framerate': camera_framerate, 'host_ip': host,
+                         'timeout': 5.0}]))
+    return nodes
 
 
 def generate_launch_description():
@@ -91,12 +124,20 @@ def generate_launch_description():
         DeclareLaunchArgument('controller_config', default_value=default_config),
         DeclareLaunchArgument('bridge_telemetry_period', default_value='0.05'),
         DeclareLaunchArgument('initial_manual_mode', default_value='false'),
+        DeclareLaunchArgument('enable_front_camera', default_value='false'),
+        DeclareLaunchArgument('camera_framerate', default_value='15.0'),
         DeclareLaunchArgument('fsds_max_speed_mps', default_value='2.0'),
         DeclareLaunchArgument('fsds_speed_brake', default_value='0.25'),
         DeclareLaunchArgument('fsds_throttle_scale', default_value='0.20'),
         DeclareLaunchArgument('fsds_speed_soft_zone_mps', default_value='0.0'),
         DeclareLaunchArgument('fsds_speed_brake_margin_mps', default_value='0.0'),
         DeclareLaunchArgument('fsds_overspeed_brake_zone_mps', default_value='0.0'),
+        DeclareLaunchArgument('fsds_speed_kp', default_value='0.08'),
+        DeclareLaunchArgument('fsds_speed_ki', default_value='0.04'),
+        DeclareLaunchArgument('fsds_speed_integral_limit', default_value='3.0'),
+        DeclareLaunchArgument('fsds_speed_brake_gain', default_value='1.0'),
+        DeclareLaunchArgument('fsds_speed_breakaway_throttle', default_value='0.20'),
+        DeclareLaunchArgument('fsds_longitudinal_mode', default_value='legacy'),
         DeclareLaunchArgument('data_timeout', default_value='0.4'),
         DeclareLaunchArgument('sensor_rate_hz', default_value='0.0'),
         DeclareLaunchArgument('sensor_latency_s', default_value='0.0'),

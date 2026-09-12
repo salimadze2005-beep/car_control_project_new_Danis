@@ -22,6 +22,30 @@ class ControlPanelTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             PANEL.build_wsl_invocation('Ubuntu-22.04', '/repo', 'turbo')
 
+    def test_speed_and_throttle_invocation(self):
+        command = PANEL.build_speed_invocation(
+            'Ubuntu-22.04', '/repo', 15.0, 0.25)
+        self.assertTrue(command[5].endswith(
+            'python3 tools/fsds_speed.py 15.00 --throttle-scale 0.25'))
+        for invalid in (0., 15.1, float('inf')):
+            with self.assertRaises(ValueError):
+                PANEL.build_speed_invocation('Ubuntu-22.04', '/repo', invalid, .2)
+
+    def test_record_and_status_invocations(self):
+        command = PANEL.build_record_invocation(
+            'Ubuntu-22.04', '/repo', 'start')
+        self.assertTrue(command[5].endswith('python3 tools/fsds_record.py start'))
+        with self.assertRaises(ValueError):
+            PANEL.build_record_invocation('Ubuntu-22.04', '/repo', 'erase')
+        self.assertIn('ros2 topic echo /car/status --once',
+                      PANEL.build_status_invocation('Ubuntu-22.04', '/repo')[5])
+
+    def test_close_returns_keyboard_before_stopping_recorder(self):
+        commands = PANEL.build_close_invocations('Ubuntu-22.04', '/repo')
+        self.assertEqual(len(commands), 2)
+        self.assertTrue(commands[0][5].endswith('python3 tools/fsds_mode.py manual'))
+        self.assertTrue(commands[1][5].endswith('python3 tools/fsds_record.py stop'))
+
 
 if __name__ == '__main__':
     unittest.main()

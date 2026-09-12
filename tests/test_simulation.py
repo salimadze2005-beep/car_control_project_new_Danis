@@ -10,7 +10,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT/'shared'), str(ROOT/'ros/car_control_ros/src'),
                 str(ROOT/'Jetson Xavier')]
 from car_control_core.core import Controller, Parameters, Command, Bicycle, circle_track, world_to_cones
-from car_control_core.fsds import track_from_message, pose_from_message, vehicle_cones, map_command, validate_host, fill_command, speed_limited_command
+from car_control_core.fsds import (track_from_message, pose_from_message,
+                                   vehicle_cones, map_command, validate_host,
+                                   fill_command, speed_limited_command,
+                                   LongitudinalController)
 from car_control_core.session import Session
 from car_control_core.sensor import ConeSensor, SensorParameters
 from Code.Autopilot import HardwareAutopilot
@@ -100,6 +103,37 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(speed_limited_command(
             command, 3.5, 2., 1., 0.3, 1., 0., 1.),
             Command(0., -0.3, 1.))
+
+    def test_longitudinal_feedback_and_brake_priority(self):
+        controller = LongitudinalController(
+            kp=.08, ki=.04, brake_gain=1., breakaway_throttle=.2)
+        command = Command(1., .25, 0.)
+        self.assertEqual(controller.step(command, 0., 2.5, .2, .05),
+                         Command(.2, .25, 0.))
+        near_target = controller.step(command, 2.4, 2.5, .2, .05)
+        self.assertGreater(near_target.throttle, 0.)
+        self.assertLess(near_target.throttle, .2)
+        overspeed = controller.step(command, 3., 2.5, .2, .05)
+        self.assertEqual(overspeed, Command(0., .25, .5))
+        for speed in (0., 5., 20.):
+            self.assertEqual(controller.step(Command(), speed, 15., 1., .05),
+                             Command())
+
+    def test_longitudinal_integral_resets_on_stop(self):
+        controller = LongitudinalController()
+        controller.step(Command(1., 0., 0.), 1., 2.5, .2, .1)
+        self.assertGreater(controller.integral, 0.)
+        controller.step(Command(), 1., 2.5, .2, .1)
+        self.assertEqual(controller.integral, 0.)
+
+    def test_longitudinal_anti_windup_at_throttle_limit(self):
+        controller = LongitudinalController()
+        for _ in range(100):
+            output = controller.step(Command(1., 0., 0.), 0., 2.5, .2, .05)
+        self.assertEqual(output.throttle, .2)
+        self.assertEqual(controller.integral, 0.)
+        near_target = controller.step(Command(1., 0., 0.), 2.4, 2.5, .2, .05)
+        self.assertLess(near_target.throttle, .02)
 
     def test_jetson_profile_matches_main(self):
         profile = json.loads((ROOT/'ros2/car_control_sim/config/fsds_jetson.json').read_text())
