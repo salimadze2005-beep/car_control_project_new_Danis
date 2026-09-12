@@ -13,6 +13,11 @@ MODES = ('manual', 'auto', 'stop')
 ARROW_KEYS = (0x25, 0x26, 0x27, 0x28)
 
 
+def mode_after_result(requested_mode, return_code):
+    """A failed switch has unknown ownership and must remain retryable."""
+    return requested_mode if return_code == 0 else None
+
+
 def build_speed_invocation(distro, repository, speed, throttle_scale=0.20,
                            steering_gain=0.8, steering_response=0.5,
                            steering_limit=0.7):
@@ -211,11 +216,12 @@ def main(argv=None):
                     continue
                 state['busy'] = False
                 if return_code == 0:
-                    state['mode'] = mode
+                    state['mode'] = mode_after_result(mode, return_code)
                     status.set(mode.upper())
                     status_label.configure(fg={'manual': '#b36b00', 'auto': '#008000', 'stop': '#b00020'}[mode])
                     detail.set(output.splitlines()[-1] if output else 'Mode changed')
                 else:
+                    state['mode'] = mode_after_result(mode, return_code)
                     status.set('ERROR')
                     status_label.configure(fg='#b00020')
                     detail.set(output[-180:] if output else 'Mode switch failed')
