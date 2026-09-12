@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Small always-on-top Windows overlay for FSDS manual/automatic control."""
 import argparse
+import csv
+import io
 import math
 import os
 import queue
@@ -11,6 +13,51 @@ import threading
 
 MODES = ('manual', 'auto', 'stop')
 ARROW_KEYS = (0x25, 0x26, 0x27, 0x28)
+
+
+def parse_tasklist_pids(output, image_name):
+    """Extract matching PIDs from tasklist CSV output, independent of locale."""
+    pids = []
+    for row in csv.reader(io.StringIO(output or '')):
+        if len(row) < 2 or row[0].strip().lower() != image_name.lower():
+            continue
+        digits = ''.join(character for character in row[1] if character.isdigit())
+        if digits:
+            pids.append(int(digits))
+    return pids
+
+
+def windows_fsds_inventory(run=subprocess.run):
+    """Return local FSDS process PIDs; unavailable checks degrade to no warning."""
+    if os.name != 'nt':
+        return {}
+    inventory = {}
+    flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+    for image_name in ('FSDS.exe', 'Blocks.exe'):
+        try:
+            result = run(
+                ['tasklist', '/FI', 'IMAGENAME eq %s' % image_name,
+                 '/FO', 'CSV', '/NH'],
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                creationflags=flags, timeout=5, check=False)
+            inventory[image_name] = parse_tasklist_pids(result.stdout, image_name)
+        except (OSError, subprocess.SubprocessError):
+            return {}
+    return inventory
+
+
+def duplicate_fsds_warning(inventory=None):
+    """Explain the duplicate-server condition that makes AirSim RPC time out."""
+    if inventory is None:
+        inventory = windows_fsds_inventory()
+    duplicates = [
+        '%s PIDs %s' % (name, ', '.join(str(pid) for pid in pids))
+        for name, pids in inventory.items() if len(pids) > 1
+    ]
+    if not duplicates:
+        return ''
+    return ('DUPLICATE FSDS: close old copies before AUTO (' +
+            '; '.join(duplicates) + ')')
 
 
 def mode_after_result(requested_mode, return_code):
@@ -102,6 +149,9 @@ def main(argv=None):
              'closing': False}
     status = tk.StringVar(value=args.initial_mode.upper())
     detail = tk.StringVar(value='Arrows automatically select MANUAL')
+    startup_warning = duplicate_fsds_warning()
+    if startup_warning:
+        detail.set(startup_warning)
 
     tk.Label(root, text='FSDS CONTROL', font=('Segoe UI', 13, 'bold')).pack(pady=(8, 2))
     status_label = tk.Label(root, textvariable=status, font=('Segoe UI', 11, 'bold'))
@@ -129,6 +179,14 @@ def main(argv=None):
     def request(mode, force=False):
         if state['busy'] or (state['mode'] == mode and not force):
             return
+        if mode == 'auto':
+            process_warning = duplicate_fsds_warning()
+            if process_warning:
+                state['mode'] = None
+                status.set('ERROR')
+                status_label.configure(fg='#b00020')
+                detail.set(process_warning)
+                return
         if mode == 'auto' and state['arrows']:
             detail.set('Release arrow keys before enabling AUTOPILOT')
             return
@@ -268,3 +326,4 @@ def main(argv=None):
 
 if __name__ == '__main__':
     raise SystemExit(main())
+
