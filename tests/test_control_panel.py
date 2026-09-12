@@ -22,6 +22,10 @@ class ControlPanelTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             PANEL.build_wsl_invocation('Ubuntu-22.04', '/repo', 'turbo')
 
+    def test_failed_mode_switch_remains_retryable(self):
+        self.assertEqual(PANEL.mode_after_result('auto', 0), 'auto')
+        self.assertIsNone(PANEL.mode_after_result('auto', 1))
+
     def test_speed_and_throttle_invocation(self):
         command = PANEL.build_speed_invocation(
             'Ubuntu-22.04', '/repo', 15.0, 0.25, 1.1, 0.65, 0.8)
