@@ -11,6 +11,18 @@ SPEC.loader.exec_module(PANEL)
 
 
 class ControlPanelTests(unittest.TestCase):
+    def test_tasklist_parser_and_duplicate_warning(self):
+        output = ('"FSDS.exe","12676","Console","1","100 K"\n'
+                  '"FSDS.exe","11212","Console","1","100 K"\n')
+        self.assertEqual(PANEL.parse_tasklist_pids(output, 'FSDS.exe'),
+                         [12676, 11212])
+        warning = PANEL.duplicate_fsds_warning({
+            'FSDS.exe': [12676, 11212], 'Blocks.exe': [15520, 13340]})
+        self.assertIn('DUPLICATE FSDS', warning)
+        self.assertIn('12676', warning)
+        self.assertEqual(PANEL.duplicate_fsds_warning({
+            'FSDS.exe': [11212], 'Blocks.exe': [13340]}), '')
+
     def test_wsl_invocation_is_one_literal_argument(self):
         command = PANEL.build_wsl_invocation(
             'Ubuntu-22.04', '/home/danis/car control', 'manual')
@@ -58,3 +70,4 @@ class ControlPanelTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
