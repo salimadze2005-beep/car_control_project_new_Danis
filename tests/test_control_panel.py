@@ -24,12 +24,17 @@ class ControlPanelTests(unittest.TestCase):
 
     def test_speed_and_throttle_invocation(self):
         command = PANEL.build_speed_invocation(
-            'Ubuntu-22.04', '/repo', 15.0, 0.25)
+            'Ubuntu-22.04', '/repo', 15.0, 0.25, 1.1, 0.65, 0.8)
         self.assertTrue(command[5].endswith(
-            'python3 tools/fsds_speed.py 15.00 --throttle-scale 0.25'))
+            'python3 tools/fsds_speed.py 15.00 --throttle-scale 0.25 '
+            '--steering-gain 1.10 --steering-response 0.65 '
+            '--steering-limit 0.80'))
         for invalid in (0., 15.1, float('inf')):
             with self.assertRaises(ValueError):
                 PANEL.build_speed_invocation('Ubuntu-22.04', '/repo', invalid, .2)
+        with self.assertRaises(ValueError):
+            PANEL.build_speed_invocation(
+                'Ubuntu-22.04', '/repo', 2.5, .2, .8, 0.0, .7)
 
     def test_record_and_status_invocations(self):
         command = PANEL.build_record_invocation(

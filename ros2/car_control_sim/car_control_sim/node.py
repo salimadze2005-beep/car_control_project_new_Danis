@@ -33,6 +33,19 @@ class ControllerNode(Node):
         data_timeout = float(self.declare_parameter('data_timeout', 0.4).value)
         self.session = Session(parameters, enabled=enabled, timeout=data_timeout,
                                require_go=backend == 'fsds')
+        self.steering_gain = float(self.declare_parameter(
+            'steering_gain', parameters.kp_gain).value)
+        self.steering_response = float(self.declare_parameter(
+            'steering_response', parameters.ema_alpha).value)
+        self.steering_limit = float(self.declare_parameter(
+            'steering_limit', parameters.max_steering_output).value)
+        if (not 0.0 <= self.steering_gain <= 3.0
+                or not 0.05 <= self.steering_response <= 1.0
+                or not 0.1 <= self.steering_limit <= 1.0):
+            raise ValueError('Runtime steering configuration is invalid')
+        parameters.kp_gain = self.steering_gain
+        parameters.ema_alpha = self.steering_response
+        parameters.max_steering_output = self.steering_limit
         self.host = validate_host(self.declare_parameter('host', 'localhost').value)
         self.tick_period = float(self.declare_parameter('tick_period', 0.02).value)
         if not 0.01 <= self.tick_period <= 10.0:
@@ -130,6 +143,20 @@ class ControllerNode(Node):
                     return SetParametersResult(
                         successful=False,
                         reason='FSDS throttle scale must be finite and within 0..1')
+            limits = {
+                'steering_gain': (0.0, 3.0),
+                'steering_response': (0.05, 1.0),
+                'steering_limit': (0.1, 1.0),
+            }
+            if parameter.name in limits:
+                value = parameter.value
+                low, high = limits[parameter.name]
+                if (isinstance(value, bool) or not isinstance(value, (int, float))
+                        or not math.isfinite(value) or not low <= value <= high):
+                    return SetParametersResult(
+                        successful=False,
+                        reason='%s must be finite and within %.2f..%.2f' % (
+                            parameter.name, low, high))
         return SetParametersResult(successful=True)
 
     def enable(self, request, response):
@@ -163,6 +190,13 @@ class ControllerNode(Node):
     def tick(self):
         now = time.monotonic()
         source_now = self.get_clock().now().nanoseconds / 1e9
+        self.steering_gain = float(self.get_parameter('steering_gain').value)
+        self.steering_response = float(
+            self.get_parameter('steering_response').value)
+        self.steering_limit = float(self.get_parameter('steering_limit').value)
+        self.session.core.p.kp_gain = self.steering_gain
+        self.session.core.p.ema_alpha = self.steering_response
+        self.session.core.p.max_steering_output = self.steering_limit
         if self.backend == 'lightweight':
             cones = world_to_cones(self.track, self.car.x, self.car.y, self.car.yaw, self.session.core.p.max_depth)
             self.session.observe(cones, source_now, now)
@@ -195,7 +229,10 @@ class ControllerNode(Node):
         self.last_wall = now
         self.commands.publish(String(data=json.dumps(vars(transport_command))))
         status = {'backend': self.backend, 'host': self.host,
-                  'enabled': self.session.enabled, 'reason': self.session.reason}
+                  'enabled': self.session.enabled, 'reason': self.session.reason,
+                  'steering_gain': self.steering_gain,
+                  'steering_response': self.steering_response,
+                  'steering_limit': self.steering_limit}
         if self.backend == 'fsds':
             status.update({'speed_mps': self.fsds_speed_mps,
                            'target_speed_mps': self.fsds_max_speed_mps,
