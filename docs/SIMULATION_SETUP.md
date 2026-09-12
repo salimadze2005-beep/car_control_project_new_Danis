@@ -620,4 +620,3 @@ catkin_make install
 - Нет tkinter: Python с Tcl/Tk либо запуск без GUI.
 - CUDA/Jetson import errors: запущен hardware server вместо simulation helper;
   hardware requirements для этих simulation-режимов не нужны.
-
