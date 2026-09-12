@@ -12,7 +12,9 @@ from rcl_interfaces.msg import SetParametersResult
 from nav_msgs.msg import Odometry
 from visualization_msgs.msg import Marker, MarkerArray
 from car_control_core.core import Parameters, Bicycle, circle_track, world_to_cones, Command
-from car_control_core.fsds import track_from_message, vehicle_cones, fill_command, speed_limited_command, validate_host
+from car_control_core.fsds import (track_from_message, vehicle_cones, fill_command,
+                                   LongitudinalController, speed_limited_command,
+                                   validate_host)
 from car_control_core.session import Session
 from car_control_core.sensor import ConeSensor, SensorParameters
 
@@ -70,7 +72,26 @@ class ControllerNode(Node):
             self.fsds_speed_brake_margin_mps = float(self.declare_parameter('fsds_speed_brake_margin_mps', 0.0).value)
             self.fsds_overspeed_brake_zone_mps = float(
                 self.declare_parameter('fsds_overspeed_brake_zone_mps', 0.0).value)
-            if (not self.fsds_max_speed_mps > 0 or not 0 <= self.fsds_speed_brake <= 1
+            self.fsds_speed_kp = float(self.declare_parameter('fsds_speed_kp', 0.08).value)
+            self.fsds_speed_ki = float(self.declare_parameter('fsds_speed_ki', 0.04).value)
+            self.fsds_speed_integral_limit = float(
+                self.declare_parameter('fsds_speed_integral_limit', 3.0).value)
+            self.fsds_speed_brake_gain = float(
+                self.declare_parameter('fsds_speed_brake_gain', 1.0).value)
+            self.fsds_speed_breakaway_throttle = float(
+                self.declare_parameter('fsds_speed_breakaway_throttle', 0.20).value)
+            self.fsds_longitudinal_mode = str(
+                self.declare_parameter('fsds_longitudinal_mode', 'legacy').value)
+            if self.fsds_longitudinal_mode not in ('legacy', 'pi'):
+                raise ValueError('fsds_longitudinal_mode must be legacy or pi')
+            self.speed_controller = LongitudinalController(
+                kp=self.fsds_speed_kp, ki=self.fsds_speed_ki,
+                integral_limit=self.fsds_speed_integral_limit,
+                brake_gain=self.fsds_speed_brake_gain,
+                maximum_brake=self.fsds_speed_brake,
+                breakaway_throttle=self.fsds_speed_breakaway_throttle)
+            if (not 0.1 <= self.fsds_max_speed_mps <= 15.0
+                    or not 0 <= self.fsds_speed_brake <= 1
                     or not 0 <= self.fsds_throttle_scale <= 1
                     or self.fsds_speed_soft_zone_mps < 0
                     or self.fsds_overspeed_brake_zone_mps < 0
@@ -97,10 +118,18 @@ class ControllerNode(Node):
                 value = parameter.value
                 if (self.backend != 'fsds' or isinstance(value, bool)
                         or not isinstance(value, (int, float))
-                        or not math.isfinite(value) or not 0.1 <= value <= 5.0
+                        or not math.isfinite(value) or not 0.1 <= value <= 15.0
                         or value <= self.fsds_speed_brake_margin_mps):
                     return SetParametersResult(successful=False, reason=
-                        'FSDS target must be finite, 0.1..5.0 m/s and above brake margin')
+                        'FSDS target must be finite, 0.1..15.0 m/s and above brake margin')
+            if parameter.name == 'fsds_throttle_scale':
+                value = parameter.value
+                if (self.backend != 'fsds' or isinstance(value, bool)
+                        or not isinstance(value, (int, float))
+                        or not math.isfinite(value) or not 0.0 <= value <= 1.0):
+                    return SetParametersResult(
+                        successful=False,
+                        reason='FSDS throttle scale must be finite and within 0..1')
         return SetParametersResult(successful=True)
 
     def enable(self, request, response):
@@ -146,19 +175,36 @@ class ControllerNode(Node):
         transport_command = command
         if self.backend == 'fsds':
             self.fsds_max_speed_mps = float(self.get_parameter('fsds_max_speed_mps').value)
-            transport_command = speed_limited_command(
-                command, self.fsds_speed_mps, self.fsds_max_speed_mps,
-                self.fsds_speed_brake, self.fsds_throttle_scale,
-                self.fsds_speed_soft_zone_mps, self.fsds_speed_brake_margin_mps,
-                self.fsds_overspeed_brake_zone_mps)
+            self.fsds_throttle_scale = float(
+                self.get_parameter('fsds_throttle_scale').value)
+            if self.fsds_longitudinal_mode == 'pi':
+                transport_command = self.speed_controller.step(
+                    command, self.fsds_speed_mps, self.fsds_max_speed_mps,
+                    self.fsds_throttle_scale, self.tick_period)
+            else:
+                transport_command = speed_limited_command(
+                    command, self.fsds_speed_mps, self.fsds_max_speed_mps,
+                    self.fsds_speed_brake, self.fsds_throttle_scale,
+                    self.fsds_speed_soft_zone_mps,
+                    self.fsds_speed_brake_margin_mps,
+                    self.fsds_overspeed_brake_zone_mps)
             self.command_pub.publish(fill_command(self.command_type(), transport_command, self.get_clock().now().to_msg()))
         else:
             self.car.step(command, min(max(now-self.last_wall, 0.), 0.1))
             self.publish_model()
         self.last_wall = now
         self.commands.publish(String(data=json.dumps(vars(transport_command))))
-        self.status.publish(String(data=json.dumps({'backend': self.backend, 'host': self.host,
-                            'enabled': self.session.enabled, 'reason': self.session.reason})))
+        status = {'backend': self.backend, 'host': self.host,
+                  'enabled': self.session.enabled, 'reason': self.session.reason}
+        if self.backend == 'fsds':
+            status.update({'speed_mps': self.fsds_speed_mps,
+                           'target_speed_mps': self.fsds_max_speed_mps,
+                           'throttle_scale': self.fsds_throttle_scale,
+                           'visible_cones': len(self.session.sample[0])
+                           if self.session.sample else 0,
+                           'perception': 'ground_truth',
+                           'longitudinal_mode': self.fsds_longitudinal_mode})
+        self.status.publish(String(data=json.dumps(status)))
         if self.last_reason != self.session.reason:
             self.get_logger().info('Control state: ' + self.session.reason)
             self.last_reason = self.session.reason

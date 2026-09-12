@@ -45,7 +45,7 @@ DDS fixture сам по себе НЕ является Unreal end-to-end тес�
 этом Windows 11 ноутбуке проверены FSDS v2.2.0 TrainingMap на встроенной AMD,
 ROS2 bridge в WSL2, получение 196 конусов/odometry, enable/disable, движение и
 финальная команда полного тормоза. Remote GPU host, реальный Jetson, полный круг
-и camera inference/FPS пока не проверялись.
+и FPS записи передней камеры пока не проверялись.
 
 ## Версии и upstream dependency
 
@@ -126,9 +126,9 @@ AirSim не доказывает Windows build ROS2 bridge. Поэтому по�
 ## WSL2 fallback: установка и build
 
 WSL нужен для официального C++ bridge, не для Unreal: GPU/рендеринг остаются
-в Windows. Второй компьютер и GPU внутри WSL не нужны. Нет camera/TensorRT
-inference в ROS2-контуре на этом этапе: Jetson baseline моделирует измерения из
-ground truth. При remote режиме controller также не требует CUDA.
+в Windows. Второй компьютер и GPU внутри WSL не нужны. Controller получает
+ground-truth cones; передняя FSDS-камера используется для записи заезда, без
+ONNX/TensorRT inference. При remote режиме controller также не требует CUDA.
 
 PowerShell администратора, если WSL ещё не установлен:
 
@@ -144,6 +144,7 @@ wsl --install -d Ubuntu-22.04
 sudo apt update
 sudo apt install ros-humble-ros-base git build-essential cmake pkg-config \
   libeigen3-dev libyaml-cpp-dev libcurl4-openssl-dev libboost-dev libopencv-dev \
+  python3-numpy python3-opencv \
   python3-colcon-common-extensions ros-humble-ament-cmake-auto \
   ros-humble-cv-bridge ros-humble-image-transport ros-humble-tf2-ros \
   ros-humble-rosgraph-msgs ros-humble-visualization-msgs
@@ -177,9 +178,10 @@ ROS2 timer использует wall time; deterministic проверки — ч
    и распакуйте отдельно от Git checkout. Unreal Editor не требуется.
 2. Запустите `FSDS.exe`, загрузите штатную трассу, проверьте ручное движение.
    Перед ROS2 прекратите ручное управление и другие источники команд.
-3. Начальный профиль без lidar/camera запросов —
+3. Профиль с GSS и передней RGB-камерой —
    [`simulation/fsds-settings.json`](../simulation/fsds-settings.json): штатный
-   Technion car, имя `FSCar`, включён GSS (нужен для `/clock`). Этот профиль
+   Technion car, имя `FSCar`, включён GSS (нужен для `/clock`). Камера `front`
+   имеет 640x480, 90° FOV и публикуется с частотой 15 Hz. Этот профиль
    проверен локально на TrainingMap; при проблеме начните с upstream `settings.json`.
 4. Из каталога binary передайте абсолютный путь к JSON штатным `-settings`:
 
@@ -258,14 +260,15 @@ heartbeat, не замена пользовательского enable и не �
 Проверенный для WSL2 профиль FSDS использует `bridge_telemetry_period:=0.05`:
 20 Hz для telemetry и controller command. Это необходимо, потому что upstream
 bridge использует однопоточный executor; его штатные 250 Hz odom polling вместе
-с 50 Hz command могут starving callback управления через Windows↔WSL RPC.
-Обычный `fsds.launch.py` использует governor 2 m/s и brake 0.25. Рекомендуемый
-`fsds_drive.launch.py` использует target 2.5 m/s, throttle scale 0.20 и плавный
-пропорциональный brake только при превышении target. На проверенном запуске он
-после начального выбега стабилизировался примерно на 2.40–2.46 m/s без прежнего
-stop-go. Core выдаёт тот же нормализованный throttle=1.0, что аппаратный
-`HardwareAutopilot`; scale преобразует его в input PhysX. Это калибровка
-исполнительного адаптера, а не другая математика controller.
+с 50 Hz command могут задерживать callback управления через Windows↔WSL RPC.
+Рекомендуемый `fsds_drive.launch.py` использует PI-регулятор фактической скорости:
+target 2.5 m/s, `Kp=0.05`, `Ki=0.04`, integral limit 0.5,
+brake gain 1.0 и throttle limit 0.20. Anti-windup не накапливает интегральную
+ошибку, пока газ уже ограничен `throttle_scale`.
+При недоборе он добавляет газ, при превышении target плавно тормозит; STOP и
+ошибки данных всегда имеют приоритет. `throttle_scale` задаёт верхний предел газа
+FSDS. Это калибровка исполнительного адаптера, shared steering core не меняется.
+Target можно менять во время работы в диапазоне 0.1–15 m/s.
 
 ```bash
 ros2 launch car_control_sim fsds_drive.launch.py host:="$FSDS_HOST"
@@ -349,11 +352,12 @@ Track — статическая карта; freshness проверяется п
 
 `ros2/car_control_sim/config/fsds.json`: core throttle 1.0, lookahead 3 m,
 width 3 m, depth 15 m. На этом FSDS команды 0.10, 0.15 и 0.18 не обеспечили
-устойчивое трогание TechnionCar, а 0.20 запустила его, поэтому adapter по умолчанию
-умножает core throttle на 0.20. Это калибровка конкретной PhysX-модели, не
-значение для Jetson.
-`fsds_max_speed_mps` (default 2.0) и `fsds_speed_brake` (default 0.25) — governor
-только FSDS adapter: core math и lightweight/hardware не меняются. `stop_on_orange=false`
+устойчивое трогание TechnionCar, а 0.20 запустила его, поэтому PI adapter использует
+0.20 как breakaway и верхний предел газа. Это калибровка конкретной PhysX-модели,
+не значение для Jetson. `fsds_max_speed_mps`, `fsds_throttle_scale`,
+`fsds_speed_kp`, `fsds_speed_ki` и `fsds_speed_brake_gain` относятся только к
+FSDS longitudinal adapter: steering core и lightweight/hardware не меняются.
+`stop_on_orange=false`
 в FSDS намеренно: оранжевые отмечают старт/финиш. Для нужного сценария включите
 его в своём JSON; lightweight/hardware сохраняют прежний stop policy.
 
@@ -371,7 +375,7 @@ ros2 launch car_control_sim fsds.launch.py host:=localhost controller_config:=/a
 - не более шести ближайших конусов каждого цвета, 15 observations/s и 67 ms delay;
 - ширина коридора 3 m, lookahead 3 m;
 - оранжевые стартовые конусы не останавливают controller;
-- target 2.5 m/s, throttle scale 0.20, soft zone 1.5 m и плавный overspeed brake.
+- target 2.5 m/s, PI feedback по odometry, throttle limit 0.20 и плавный brake.
 
 После ручного отъезда направьте нос машины примерно вдоль трассы и нажмите
 AUTOPILOT. Конусы могут быть не прямо у бампера: расширенный adapter снова найдёт
@@ -386,6 +390,27 @@ ros2 launch car_control_sim fsds_drive.launch.py host:="$FSDS_HOST"
 Точный профиль текущего Jetson-кода оставлен отдельно в
 `fsds_jetson.launch.py` для сравнения и калибровки, а не для удобного быстрого
 заезда в PhysX.
+
+### Запись камеры и телеметрии
+
+Панель запускает независимый recorder. `START RECORD` пишет штатный topic
+`/fsds/front/image_color`, поэтому `camera.mp4` показывает вид с машины,
+а не экран оператора. Одновременно создаются `telemetry.csv`, `summary.json` и
+`recorder.log` в `recordings/YYYYMMDD_HHMMSS/`. Запись можно управлять из WSL:
+
+```bash
+python3 tools/fsds_record.py start
+python3 tools/fsds_record.py status
+python3 tools/fsds_record.py stop
+```
+
+При закрытии Windows-панели recorder завершается для корректного MP4, controller
+отключается и bridge возвращает FSDS keyboard control. Если `camera.mp4` не
+создан, проверьте camera topic и перезапустите FSDS с актуальным settings:
+
+```bash
+ros2 topic hz /fsds/front/image_color
+```
 
 ## Jetson baseline и stress simulation
 
@@ -500,6 +525,8 @@ Humble после build/source:
 ```bash
 python3 tests/ros2_lightweight.py
 python3 tests/ros2_graph.py  # требует сгенерированный upstream fs_msgs
+python3 tests/ros2_speed.py
+python3 tests/ros2_recorder.py
 ```
 
 При запущенных Windows FSDS и `fsds_drive.launch.py` безопасный motion smoke:
@@ -511,8 +538,11 @@ python3 tests/fsds_smoke.py
 Он требует disabled+brake до старта, на восемь секунд включает controller,
 проверяет движение, throttle и runaway ceiling 4.0 m/s, а в `finally` всегда
 вызывает disable и проверяет финальный полный brake. Для диагностики добавьте
-`--trace`. В двух 15-секундных локальных проверках: 12.987–13.649 m, peak
-3.504–3.690 m/s и затем устойчивая скорость около 2.40–2.46 m/s; GUI/карта и
+`--trace`. В чистом локальном 25-секундном прогоне 2026-09-12: 15.532 m,
+peak 3.112 m/s, средняя скорость движущихся samples 2.411 m/s и ни одного
+падения ниже 0.5 m/s после разгона. Одновременно recorder создал читаемый
+640x480 MP4, 953 telemetry samples и summary; на встроенной AMD GPU камера
+фактически давала около 2 FPS, хотя bridge запрашивал 15 FPS. GUI/карта и
 начальное положение всё ещё влияют на результат.
 
 ROS1 compatibility в отдельной Noetic/Ubuntu 20.04 среде:

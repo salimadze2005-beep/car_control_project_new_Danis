@@ -11,6 +11,7 @@ car_control.log
 car_control.log.*
 ros_ws/
 *.bag
+recordings/
 simulation_ws/
 build/
 install/

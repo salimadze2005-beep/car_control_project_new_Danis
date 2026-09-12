@@ -16,7 +16,22 @@
       "AllowAPIAlways": true,
       "RC": {"RemoteControlID": -1},
       "Sensors": {"GSS": {"SensorType": 7, "Enabled": true}},
-      "Cameras": {},
+      "Cameras": {
+        "front": {
+          "CaptureSettings": [{
+            "ImageType": 0,
+            "Width": 640,
+            "Height": 480,
+            "FOV_Degrees": 90
+          }],
+          "X": 0.75,
+          "Y": 0.0,
+          "Z": -0.55,
+          "Pitch": -5.0,
+          "Roll": 0.0,
+          "Yaw": 0.0
+        }
+      },
       "X": 2, "Y": 0, "Z": 0,
       "Pitch": 0, "Roll": 0, "Yaw": 0
     }
