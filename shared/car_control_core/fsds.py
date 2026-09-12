@@ -73,6 +73,8 @@ def speed_limited_command(command, speed, max_speed, brake, throttle_scale=1.0,
             or not 0 <= brake_margin < max_speed):
         return Command()
     command = map_command(command)
+    if command.brake > 0:
+        return command
     if brake_margin > 0 and speed >= max_speed - brake_margin:
         return Command(0., command.steering, clamp(brake, 0., 1.))
     if speed >= max_speed:

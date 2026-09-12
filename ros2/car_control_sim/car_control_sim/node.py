@@ -8,6 +8,7 @@ from rclpy.clock import Clock, ClockType
 from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
 from std_msgs.msg import String
 from std_srvs.srv import SetBool
+from rcl_interfaces.msg import SetParametersResult
 from nav_msgs.msg import Odometry
 from visualization_msgs.msg import Marker, MarkerArray
 from car_control_core.core import Parameters, Bicycle, circle_track, world_to_cones, Command
@@ -88,6 +89,19 @@ class ControllerNode(Node):
             self.car, self.track = Bicycle(), circle_track()
         # Explicit steady clock: watchdog must fire even when FSDS /clock stops.
         self.timer = self.create_timer(self.tick_period, self.tick, clock=Clock(clock_type=ClockType.STEADY_TIME))
+        self.add_on_set_parameters_callback(self.validate_runtime_speed)
+
+    def validate_runtime_speed(self, parameters):
+        for parameter in parameters:
+            if parameter.name == 'fsds_max_speed_mps':
+                value = parameter.value
+                if (self.backend != 'fsds' or isinstance(value, bool)
+                        or not isinstance(value, (int, float))
+                        or not math.isfinite(value) or not 0.1 <= value <= 5.0
+                        or value <= self.fsds_speed_brake_margin_mps):
+                    return SetParametersResult(successful=False, reason=
+                        'FSDS target must be finite, 0.1..5.0 m/s and above brake margin')
+        return SetParametersResult(successful=True)
 
     def enable(self, request, response):
         self.session.enable(request.data)
@@ -131,6 +145,7 @@ class ControllerNode(Node):
         command = self.session.tick(now, source_now)
         transport_command = command
         if self.backend == 'fsds':
+            self.fsds_max_speed_mps = float(self.get_parameter('fsds_max_speed_mps').value)
             transport_command = speed_limited_command(
                 command, self.fsds_speed_mps, self.fsds_max_speed_mps,
                 self.fsds_speed_brake, self.fsds_throttle_scale,
