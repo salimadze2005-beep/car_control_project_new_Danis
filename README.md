@@ -50,6 +50,9 @@ ros2 launch car_control_sim fsds_drive.launch.py host:="$FSDS_HOST"
 pythonw "\\wsl.localhost\Ubuntu-22.04\home\danis\car_control_project_new_Danis\tools\fsds_control_panel.py"
 ```
 
+Окно можно растягивать мышью за края и углы; ползунки автоматически занимают
+доступную ширину. Минимальный размер оставляет доступными основные controls.
+
 - `MANUAL` — стрелки управляют машиной.
 - `AUTOPILOT` — shared controller ведёт машину по конусам.
 - `STOP` — controller выключен, bridge отправляет тормоз.
