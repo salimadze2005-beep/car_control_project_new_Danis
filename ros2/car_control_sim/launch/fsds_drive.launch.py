@@ -16,7 +16,11 @@ def generate_launch_description():
         # Start with keyboard ownership so the operator can position the car.
         'initial_manual_mode': LaunchConfiguration('initial_manual_mode'),
         'enable_front_camera': 'true',
-        'camera_framerate': '15.0',
+        # This laptop delivers about 2 FPS at 640x480; requesting 15 FPS makes
+        # the shared FSDS RPC server less responsive without adding frames.
+        'camera_framerate': '5.0',
+        'bridge_rpc_timeout': '10.0',
+        'camera_rpc_timeout': '15.0',
         'fsds_max_speed_mps': LaunchConfiguration('fsds_max_speed_mps'),
         'fsds_speed_brake': '1.0',
         'fsds_throttle_scale': LaunchConfiguration('fsds_throttle_scale'),

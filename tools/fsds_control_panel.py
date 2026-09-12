@@ -13,17 +13,31 @@ MODES = ('manual', 'auto', 'stop')
 ARROW_KEYS = (0x25, 0x26, 0x27, 0x28)
 
 
-def build_speed_invocation(distro, repository, speed, throttle_scale=0.20):
+def build_speed_invocation(distro, repository, speed, throttle_scale=0.20,
+                           steering_gain=0.8, steering_response=0.5,
+                           steering_limit=0.7):
     speed = float(speed)
     throttle_scale = float(throttle_scale)
+    steering_gain = float(steering_gain)
+    steering_response = float(steering_response)
+    steering_limit = float(steering_limit)
     if not math.isfinite(speed) or not 0.1 <= speed <= 15.0:
         raise ValueError('Speed must be 0.1..15.0 m/s')
     if not math.isfinite(throttle_scale) or not 0 <= throttle_scale <= 1:
         raise ValueError('Throttle scale must be 0..1')
+    if not math.isfinite(steering_gain) or not 0 <= steering_gain <= 3:
+        raise ValueError('Steering gain must be 0..3')
+    if not math.isfinite(steering_response) or not 0.05 <= steering_response <= 1:
+        raise ValueError('Steering response must be 0.05..1')
+    if not math.isfinite(steering_limit) or not 0.1 <= steering_limit <= 1:
+        raise ValueError('Steering limit must be 0.1..1')
     command = 'cd %s && source /opt/ros/humble/setup.bash && ' % shlex.quote(repository)
     command += 'source simulation_ws/install/setup.bash && '
-    command += 'python3 tools/fsds_speed.py %.2f --throttle-scale %.2f' % (
-        speed, throttle_scale)
+    command += ('python3 tools/fsds_speed.py %.2f --throttle-scale %.2f '
+                '--steering-gain %.2f --steering-response %.2f '
+                '--steering-limit %.2f') % (
+                    speed, throttle_scale, steering_gain,
+                    steering_response, steering_limit)
     return ['wsl.exe', '-d', distro, 'bash', '-lc', command]
 
 
@@ -74,7 +88,7 @@ def main(argv=None):
     root.title('FSDS CONTROL')
     root.attributes('-topmost', True)
     root.resizable(False, False)
-    width, height = 400, 445
+    width, height = 420, 650
     root.geometry('%dx%d+%d+30' % (width, height, root.winfo_screenwidth() - width - 30))
 
     result_queue = queue.Queue()
@@ -96,10 +110,11 @@ def main(argv=None):
         def worker():
             try:
                 flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+                timeout = 60 if kind in MODES else 20
                 result = subprocess.run(
                     invocation, text=True, stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT, creationflags=flags,
-                    timeout=20, check=False)
+                    timeout=timeout, check=False)
                 finish(kind, result.returncode, result.stdout)
             except Exception as error:
                 finish(kind, 1, str(error))
@@ -107,6 +122,9 @@ def main(argv=None):
 
     def request(mode, force=False):
         if state['busy'] or (state['mode'] == mode and not force):
+            return
+        if mode == 'auto' and state['arrows']:
+            detail.set('Release arrow keys before enabling AUTOPILOT')
             return
         state['busy'] = True
         status.set('SWITCHING…')
@@ -119,6 +137,9 @@ def main(argv=None):
     tk.Button(buttons, text='STOP', width=9, command=lambda: request('stop'), bg='#ffb3b3').pack(side='left', padx=3)
     speed = tk.DoubleVar(value=2.5)
     throttle_scale = tk.DoubleVar(value=0.20)
+    steering_gain = tk.DoubleVar(value=0.80)
+    steering_response = tk.DoubleVar(value=0.50)
+    steering_limit = tk.DoubleVar(value=0.70)
     speed_status = tk.StringVar(value='Target not applied; running launch keeps its value')
     speed_busy = [False]
 
@@ -126,7 +147,8 @@ def main(argv=None):
         if speed_busy[0]:
             return
         invocation = build_speed_invocation(
-            args.distro, args.repository, speed.get(), throttle_scale.get())
+            args.distro, args.repository, speed.get(), throttle_scale.get(),
+            steering_gain.get(), steering_response.get(), steering_limit.get())
         speed_busy[0] = True
         speed_status.set('Applying target...')
 
@@ -136,7 +158,16 @@ def main(argv=None):
              variable=speed, label='Autopilot target (m/s)', length=360).pack()
     tk.Scale(root, from_=0.05, to=0.50, resolution=0.01, orient='horizontal',
              variable=throttle_scale, label='Maximum FSDS throttle', length=360).pack()
-    tk.Button(root, text='Apply speed + throttle', command=apply_speed).pack()
+    tk.Scale(root, from_=0.0, to=3.0, resolution=0.05, orient='horizontal',
+             variable=steering_gain,
+             label='Turn sharpness / steering gain (Kp)', length=380).pack()
+    tk.Scale(root, from_=0.05, to=1.0, resolution=0.05, orient='horizontal',
+             variable=steering_response,
+             label='Turn response speed (EMA; higher = faster)', length=380).pack()
+    tk.Scale(root, from_=0.1, to=1.0, resolution=0.05, orient='horizontal',
+             variable=steering_limit,
+             label='Maximum steering command', length=380).pack()
+    tk.Button(root, text='Apply driving settings', command=apply_speed).pack()
     tk.Label(root, textvariable=speed_status, wraplength=340, font=('Segoe UI', 8)).pack()
     tk.Label(root, text='Perception: FSDS ground truth cones',
              font=('Segoe UI', 8, 'italic')).pack(pady=(4, 0))
@@ -211,7 +242,7 @@ def main(argv=None):
                 try:
                     subprocess.run(invocation, stdout=subprocess.PIPE,
                                    stderr=subprocess.STDOUT, creationflags=flags,
-                                   timeout=15, check=False)
+                                   timeout=45, check=False)
                 except Exception:
                     pass
             root.after(0, root.destroy)

@@ -22,8 +22,14 @@ def setup(context):
         raise ValueError('enable_front_camera must be true or false')
     enable_front_camera = camera_text == 'true'
     camera_framerate = float(LaunchConfiguration('camera_framerate').perform(context))
+    bridge_rpc_timeout = float(
+        LaunchConfiguration('bridge_rpc_timeout').perform(context))
+    camera_rpc_timeout = float(
+        LaunchConfiguration('camera_rpc_timeout').perform(context))
     if not 1 <= camera_framerate <= 60:
         raise ValueError('camera_framerate must be within 1..60')
+    if not 2 <= bridge_rpc_timeout <= 60 or not 2 <= camera_rpc_timeout <= 60:
+        raise ValueError('RPC timeouts must be within 2..60 seconds')
     if not 0.01 <= bridge_telemetry_period <= 10.0:
         raise ValueError('bridge_telemetry_period must be between 0.01 and 10 seconds')
 
@@ -83,7 +89,8 @@ def setup(context):
     # Official executables and native host_ip RPC path.
     nodes = [
         Node(package='fsds_ros2_bridge', executable='fsds_ros2_bridge', namespace='fsds',
-             name='ros_bridge', output='screen', parameters=[{'host_ip': host, 'timeout': 2.0,
+             name='ros_bridge', output='screen', respawn=True, respawn_delay=2.0,
+             parameters=[{'host_ip': host, 'timeout': bridge_rpc_timeout,
                  'competition_mode': False, 'manual_mode': initial_manual_mode,
                  'mission_name': 'trackdrive',
                  'track_name': 'A',
@@ -111,9 +118,10 @@ def setup(context):
         nodes.append(Node(
             package='fsds_ros2_bridge', executable='fsds_ros2_bridge_camera',
             namespace='fsds/camera', name='front', output='screen',
+            respawn=True, respawn_delay=3.0,
             parameters=[{'camera_name': 'front', 'depthcamera': False,
                          'framerate': camera_framerate, 'host_ip': host,
-                         'timeout': 5.0}]))
+                         'timeout': camera_rpc_timeout}]))
     return nodes
 
 
@@ -126,6 +134,8 @@ def generate_launch_description():
         DeclareLaunchArgument('initial_manual_mode', default_value='false'),
         DeclareLaunchArgument('enable_front_camera', default_value='false'),
         DeclareLaunchArgument('camera_framerate', default_value='15.0'),
+        DeclareLaunchArgument('bridge_rpc_timeout', default_value='10.0'),
+        DeclareLaunchArgument('camera_rpc_timeout', default_value='15.0'),
         DeclareLaunchArgument('fsds_max_speed_mps', default_value='2.0'),
         DeclareLaunchArgument('fsds_speed_brake', default_value='0.25'),
         DeclareLaunchArgument('fsds_throttle_scale', default_value='0.20'),

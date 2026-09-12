@@ -54,6 +54,8 @@ pythonw "\\wsl.localhost\Ubuntu-22.04\home\danis\car_control_project_new_Danis\t
 - `AUTOPILOT` — shared controller ведёт машину по конусам.
 - `STOP` — controller выключен, bridge отправляет тормоз.
 - Стрелка во время `AUTOPILOT` автоматически возвращает `MANUAL`.
+- `Turn sharpness` меняет steering `Kp`, `Turn response speed` — EMA response,
+  а `Maximum steering command` ограничивает максимальную команду руля.
 
 Без панели переключение выполняется из sourced WSL shell:
 
@@ -78,6 +80,20 @@ python3 tools/fsds_mode.py stop
 ```bash
 python3 tools/fsds_speed.py 2.0 --throttle-scale 0.20
 ```
+
+Одновременная настройка поворота:
+
+```bash
+python3 tools/fsds_speed.py 2.5 --throttle-scale 0.20 \
+  --steering-gain 0.80 --steering-response 0.50 --steering-limit 0.70
+```
+
+- `steering_gain`: выше — сильнее коррекция на ту же ошибку трассы.
+- `steering_response`: выше — быстрее реакция и меньше сглаживание.
+- `steering_limit`: максимальная команда руля в диапазоне 0..1.
+
+Меняйте их небольшими шагами. Слишком большие gain/response вызывают рыскание,
+а слишком маленькие — поздний вход в поворот.
 
 После обновления кода пересоберите ROS2 и перезапустите launch и панель:
 `bash tools/build_ros2.sh --fsds "$HOME/fsds-v2.2.0"`.
@@ -130,6 +146,12 @@ ros2 launch car_control_sim fsds_drive.launch.py host:="$FSDS_HOST" \
 При закрытии панели текущая запись завершается, controller отключается, а FSDS
 возвращает управление стрелкам. Для камеры нужно запускать FSDS с обновлённым
 `simulation/fsds-settings.json`; после изменения settings FSDS надо перезапустить.
+
+Если FSDS кратко зависнет или сменит карту, официальный bridge может завершиться
+по `rpc::timeout`. Launch теперь автоматически перезапускает bridge и camera.
+Кнопка `AUTOPILOT` ждёт свежие odometry/cones, сбрасывает safety latch через
+disable и только затем включает controller. Сам FSDS при этом должен оставаться
+запущенным с загруженной трассой.
 
 Самый быстрый запуск на Windows/Linux, Python 3.8+, без ROS/GPU:
 

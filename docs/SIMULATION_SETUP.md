@@ -234,6 +234,16 @@ pythonw "\\wsl.localhost\Ubuntu-22.04\home\danis\car_control_project_new_Danis\t
 внутри Unreal: если exclusive fullscreen скрывает панель, включите windowed или
 borderless режим.
 
+Три steering-регулятора панели напрямую меняют параметры shared core:
+
+- `Turn sharpness / steering gain (Kp)` — сила реакции на боковую ошибку;
+- `Turn response speed (EMA)` — скорость обновления сглаженной цели, больше
+  означает быстрее и резче;
+- `Maximum steering command` — верхний предел нормализованного руля.
+
+Значения профиля `fsds_drive`: `0.80`, `0.50`, `0.70`. Изменение выполняется
+атомарно вместе со speed/throttle и не включает автопилот автоматически.
+
 Эквивалент без панели, во втором WSL shell из репозитория:
 
 ```bash
@@ -526,6 +536,7 @@ Humble после build/source:
 python3 tests/ros2_lightweight.py
 python3 tests/ros2_graph.py  # требует сгенерированный upstream fs_msgs
 python3 tests/ros2_speed.py
+python3 tests/ros2_mode.py
 python3 tests/ros2_recorder.py
 ```
 
@@ -542,8 +553,9 @@ python3 tests/fsds_smoke.py
 peak 3.112 m/s, средняя скорость движущихся samples 2.411 m/s и ни одного
 падения ниже 0.5 m/s после разгона. Одновременно recorder создал читаемый
 640x480 MP4, 953 telemetry samples и summary; на встроенной AMD GPU камера
-фактически давала около 2 FPS, хотя bridge запрашивал 15 FPS. GUI/карта и
-начальное положение всё ещё влияют на результат.
+фактически давала около 2 FPS при старом запросе 15 FPS. Поэтому текущий
+`fsds_drive` запрашивает 5 FPS, снижая RPC-нагрузку без потери наблюдаемой
+частоты. GUI/карта и начальное положение всё ещё влияют на результат.
 
 ROS1 compatibility в отдельной Noetic/Ubuntu 20.04 среде:
 
@@ -588,6 +600,13 @@ catkin_make install
 - Warning про nodes с одинаковым именем или нестабильные команды: одновременно
   запущены несколько `fsds.launch.py`/`fsds_jetson.launch.py`. Сначала disable,
   корректно остановите лишний launch и оставьте один controller/bridge.
+- `rpc::timeout` / bridge process died: FSDS был закрыт, менял карту, завис или
+  RPC перегружен camera polling. `fsds_drive` запрашивает 5 FPS, использует
+  timeout 10/15 s и автоматически respawn-ит bridge/camera. Не запускайте второй
+  launch. Оставьте FSDS открытым на трассе; после сообщения `Connected` нажмите
+  `AUTOPILOT` ещё раз. Helper дождётся свежих cones/odom и безопасно сбросит
+  `connection_fault_reenable_required`; без свежих данных controller останется
+  disabled.
 - `no_usable_cones`: вне трассы/FOV/дальности или неверный origin; используйте
   `fsds_drive.launch.py`, направьте машину вдоль трассы, затем AUTOPILOT. Если
   Track сменился, перезапустите launch; потом проверяйте geometry/origin.
