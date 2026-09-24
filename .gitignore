@@ -12,6 +12,9 @@ car_control.log.*
 ros_ws/
 *.bag
 recordings/
+simulation/cad_sources/*.SLDPRT
+simulation/cad_sources/*.SLDASM
+simulation/cad_sources/*:Zone.Identifier
 simulation_ws/
 build/
 install/

@@ -1,5 +1,9 @@
 # Simulation: Windows, ROS2 и FSDS
 
+Актуальные изменения записи, новые трассы и ограничения проверки от 18.09.2026:
+**[SIMULATION_TESTING.md](SIMULATION_TESTING.md)**. Исторические результаты ниже
+относятся к прежним запускам и не подтверждают работоспособность новой карты на GPU.
+
 ## Архитектура и границы проверки
 
 `simulation` создана от `ros` commit `2e2e053c4c00561e78ef67a5b24c46204c5f4dae`.
@@ -405,8 +409,10 @@ ros2 launch car_control_sim fsds_drive.launch.py host:="$FSDS_HOST"
 
 Панель запускает независимый recorder. `START RECORD` пишет штатный topic
 `/fsds/front/image_color`, поэтому `camera.mp4` показывает вид с машины,
-а не экран оператора. Одновременно создаются `telemetry.csv`, `summary.json` и
-`recorder.log` в `recordings/YYYYMMDD_HHMMSS/`. Запись можно управлять из WSL:
+а не экран оператора. Исходные кадры сохраняются в `frames/`, MP4 собирается при
+остановке по временам получения кадров. Также создаются `frames.csv`,
+`telemetry.csv`, `events.jsonl`, `summary.json`, `report.md` и `recorder.log`
+в уникальной папке `recordings/`. Запись можно управлять из WSL:
 
 ```bash
 python3 tools/fsds_record.py start

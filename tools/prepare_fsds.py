@@ -32,15 +32,17 @@ def prepare(destination):
     for path, key in [('ros2/src/fs_msgs', 'fs_msgs_ros2_commit'), ('AirSim/external/rpclib', 'rpclib_commit')]:
         if git('rev-parse', 'HEAD', cwd=destination/path) != lock[key]:
             raise ValueError('Unexpected submodule revision: ' + path)
-    patch = ROOT / 'simulation' / lock['patch']
+    patches = [ROOT / 'simulation' / lock['patch'],
+               ROOT / 'simulation/upstream/fsds-2.2.0-camera.patch']
     # Upstream blobs mix CRLF/LF. Context matching must work on Linux and Windows.
     apply_options = ['--unidiff-zero', '--ignore-space-change']
-    check = subprocess.run(
-        ['git', 'apply', *apply_options, '--reverse', '--check', str(patch)],
-        cwd=destination, capture_output=True)
-    if check.returncode:
-        git('apply', *apply_options, '--check', patch, cwd=destination)
-        git('apply', *apply_options, patch, cwd=destination)
+    for patch in patches:
+        check = subprocess.run(
+            ['git', 'apply', *apply_options, '--reverse', '--check', str(patch)],
+            cwd=destination, capture_output=True)
+        if check.returncode:
+            git('apply', *apply_options, '--check', patch, cwd=destination)
+            git('apply', *apply_options, patch, cwd=destination)
     print('Pinned FSDS ROS2 sources ready:', destination)
     print('Build on Ubuntu 22.04 / Humble; see docs/SIMULATION_SETUP.md.')
     return destination

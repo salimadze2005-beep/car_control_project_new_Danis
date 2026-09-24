@@ -1,0 +1,33 @@
+diff --git a/ros2/src/fsds_ros2_bridge/src/fsds_ros2_bridge_camera.cpp b/ros2/src/fsds_ros2_bridge/src/fsds_ros2_bridge_camera.cpp
+index 20181b1..c117644 100644
+--- a/ros2/src/fsds_ros2_bridge/src/fsds_ros2_bridge_camera.cpp
++++ b/ros2/src/fsds_ros2_bridge/src/fsds_ros2_bridge_camera.cpp
+@@ -49,12 +49,10 @@ std::vector<ImageResponse> getImage(ImageRequest req) {
+     {
+         img_responses = airsim_api->simGetImages(reqs, "FSCar");
+     }
+-    catch (rpc::rpc_error &e)
++    catch (const std::exception &e)
+     {
+-        std::cout << "error" << std::endl;
+-        std::string msg = e.what();
+-        std::cout << "Exception raised by the API while getting image:" << std::endl
+-                  << msg << std::endl;
++        RCLCPP_ERROR(rclcpp::get_logger("fsds.camera"),
++                     "Camera RPC failed; skipping frame: %s", e.what());
+     }
+     return img_responses;
+ }
+@@ -190,10 +188,9 @@ int main(int argc, char ** argv)
+     fps_statistic = ros_bridge::Statistics("fps");
+ 
+     // ready airsim connection
+-    msr::airlib::CarRpcLibClient client(host_ip, RpcLibPort, 5);
+-    airsim_api = &client;
+-
+     double timeout_sec = nh->declare_parameter<double>("timeout", 10.0);
++    msr::airlib::CarRpcLibClient client(host_ip, RpcLibPort, timeout_sec);
++    airsim_api = &client;
+ 
+     try {
+         std::cout << "Waiting for connection - " << std::endl;

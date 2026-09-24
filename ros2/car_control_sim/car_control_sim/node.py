@@ -233,8 +233,19 @@ class ControllerNode(Node):
                   'steering_gain': self.steering_gain,
                   'steering_response': self.steering_response,
                   'steering_limit': self.steering_limit}
+        status.update({'ros_stamp_s': source_now,
+                       'controller_parameters': vars(self.session.core.p),
+                       'observation_source_stamp_s': self.session.sample[1]
+                       if self.session.sample else None,
+                       'observed_cones': self.session.sample[0]
+                       if self.session.sample else [],
+                       'tick_period_s': self.tick_period})
         if self.backend == 'fsds':
             status.update({'speed_mps': self.fsds_speed_mps,
+                           'sensor_parameters': vars(self.sensor.p),
+                           'sensor_fov_rad': self.sensor_fov,
+                           'runtime_parameters': {name: parameter.value
+                               for name, parameter in self.get_parameters_by_prefix('').items()},
                            'target_speed_mps': self.fsds_max_speed_mps,
                            'throttle_scale': self.fsds_throttle_scale,
                            'visible_cones': len(self.session.sample[0])

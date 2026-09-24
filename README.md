@@ -1,5 +1,63 @@
 # car_control_project_new_Danis — simulation
 
+Это ветка симуляции: общий controller core работает с лёгким Python-симулятором,
+FSDS 2.2.0 через ROS2 Humble и аппаратным ROS1-контуром. Для FSDS добавлены
+отдельные карты восьмёрки, змейки и поворотов, запись камеры и логи заездов.
+Полная [инструкция установки](docs/SIMULATION_SETUP.md) и
+[описание трасс и записи](docs/SIMULATION_TESTING.md).
+
+## Что нужно установить
+
+- Windows: Python 3 и готовый FSDS 2.2.0 в `C:\FSDS` (файл `C:\FSDS\FSDS.exe`).
+- WSL2: Ubuntu 22.04, ROS2 Humble, `colcon` и зависимости из
+  [инструкции](docs/SIMULATION_SETUP.md).
+- Внешний checkout исходников FSDS v2.2.0 для сборки ROS2-моста. Команда ниже
+  готовит только `AirSim` и `ros2`; Unreal Editor для управления штатной
+  машиной и CSV-картами не требуется.
+
+```bash
+cd /home/danis/car_control_project_new_Danis
+python3 tools/prepare_fsds.py --destination /home/danis/fsds-v2.2.0
+bash tools/build_ros2.sh --fsds /home/danis/fsds-v2.2.0
+```
+
+Если FSDS или ROS2 уже установлены и workspace собран, повторная установка не нужна.
+
+## Запуск тестовой карты
+
+Закройте прежнее окно FSDS. В Windows PowerShell выполните:
+
+```powershell
+python "\\wsl.localhost\Ubuntu-22.04\home\danis\car_control_project_new_Danis\tools\launch_fsds_test.py" --track test_ground
+```
+
+Вместо `test_ground` доступны `figure_eight`, `slalom`, `turns`. Скрипт выводит
+`host` для ROS2 и создаёт отдельный снимок карты и настроек в `C:\FSDS\test_runs`.
+На Radeon Vega он применяет проверенный обход стартового сбоя Vulkan. По состоянию
+на 19.09.2026 карта загрузилась, ROS2 получил 470 конусов, камера записала
+изображение над дорогой и MP4. Длительная устойчивость и прохождение трасс
+автопилотом пока не подтверждены.
+
+В отдельном терминале WSL:
+
+```bash
+cd /home/danis/car_control_project_new_Danis
+source /opt/ros/humble/setup.bash
+source simulation_ws/install/setup.bash
+ros2 launch car_control_sim fsds_drive.launch.py host:=АДРЕС_ИЗ_СКРИПТА
+```
+
+Панель управления запускается из Windows PowerShell:
+
+```powershell
+pythonw "\\wsl.localhost\Ubuntu-22.04\home\danis\car_control_project_new_Danis\tools\fsds_control_panel.py"
+```
+
+Профиль начинает в `MANUAL`. Кнопки `START RECORD`/`STOP RECORD` сохраняют
+кадры, MP4, телеметрию и отчёт в `recordings/`. Для пользовательских моделей
+SolidWorks понадобится отдельный импорт в полный Unreal-проект FSDS; сейчас
+карты используют штатные модели машины и конусов. CAD-исходники не публикуются.
+
 Один controller core для Jetson/ROS1, лёгкого симулятора и FSDS/ROS2.
 Ветка создана от `ros`; обратно ничего не сливается.
 
@@ -25,7 +83,7 @@
   limiter сохранён по умолчанию для сравнительного `fsds_jetson` профиля.
 - Добавлены unit, ROS1, ROS2, lightweight и FSDS motion-smoke проверки.
 
-## Быстрый запуск FSDS
+## Быстрый запуск FSDS без тестовых карт
 
 1. На Windows запустите FSDS и загрузите трассу.
 2. В WSL откройте репозиторий и запустите профиль:
@@ -138,12 +196,13 @@ ros2 launch car_control_sim fsds_drive.launch.py host:="$FSDS_HOST" \
 `START RECORD` в панели начинает запись передней камеры машины и телеметрии.
 Это изображение штатной FSDS-камеры, а не запись экрана или вида оператора.
 `STOP RECORD` корректно завершает MP4 и отчёт. Результат создаётся в
-`recordings/YYYYMMDD_HHMMSS/`:
+уникальной папке `recordings/YYYYMMDD_HHMMSS_ffffff/`:
 
 - `camera.mp4` — вид с передней камеры;
-- `telemetry.csv` — положение, скорость, target, газ, руль, тормоз, режим и
-  количество видимых конусов;
-- `summary.json` — длительность, расстояние, максимальная скорость и число кадров;
+- `frames/*.png` и `frames.csv` — исходные кадры и время их получения;
+- `telemetry.csv` — положение, скорость, target, газ, руль, тормоз и возраст данных;
+- `events.jsonl` — статусы, команды, конусы, параметры и ошибки ROS;
+- `summary.json` и `report.md` — показатели и предупреждения заезда;
 - `recorder.log` — диагностика записи.
 
 При закрытии панели текущая запись завершается, controller отключается, а FSDS

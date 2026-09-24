@@ -1,0 +1,21 @@
+{
+  "name": "test_ground",
+  "units": "metres",
+  "coordinates": "FSDS CSV: X forward, Y left",
+  "closed": false,
+  "width_m": 4.0,
+  "nominal_cone_spacing_m": 2.0,
+  "centerline": [
+    [
+      0.0,
+      0.0
+    ]
+  ],
+  "description": "Three separate test zones: figure eight, slalom, turns. Transfer manually; not one connected route.",
+  "start_gate": [
+    0.0,
+    0.0
+  ],
+  "intended_start_heading_rad": 0.0,
+  "length_m": 0.0
+}
