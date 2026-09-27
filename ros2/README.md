@@ -20,10 +20,11 @@ sudo apt-get install -y curl gnupg locales software-properties-common
 sudo locale-gen en_US en_US.UTF-8
 export LANG=en_US.UTF-8
 sudo add-apt-repository universe
-sudo curl -fsSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
-  -o /usr/share/keyrings/ros-archive-keyring.gpg
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu focal main" \
-  | sudo tee /etc/apt/sources.list.d/ros2.list
+gpg --keyserver keyserver.ubuntu.com --recv-keys 4B63CF8FDE49746E98FA01DDAD19BAB3CBF125EA
+gpg --export 4B63CF8FDE49746E98FA01DDAD19BAB3CBF125EA \
+  | sudo tee /usr/share/keyrings/ros2-snapshots-archive-keyring.gpg >/dev/null
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros2-snapshots-archive-keyring.gpg] http://snapshots.ros.org/foxy/final/ubuntu focal main" \
+  | sudo tee /etc/apt/sources.list.d/ros2-snapshots.list
 sudo apt-get update
 sudo apt-get install -y ros-foxy-ros-base ros-foxy-launch-ros \
   python3-colcon-common-extensions python3-pytest python3-serial \
@@ -202,3 +203,7 @@ ARM64 CI не содержит GPU Jetson, ZED и приводов. Фактич
 [TensorRT](https://docs.nvidia.com/deeplearning/tensorrt/archives/tensorrt-861/support-matrix/index.html),
 [Stereolabs](https://www.stereolabs.com/developers/release),
 [Arduino Servo](https://github.com/arduino-libraries/Servo/blob/master/src/Servo.h).
+
+Installation uses the official Foxy final snapshot, the same repository tested in CI.
+Source: https://github.com/osrf/docker_images/blob/master/ros/foxy/ubuntu/focal/ros-core/Dockerfile
+Do not enable a second conflicting ROS 2 apt source if one is already configured.
