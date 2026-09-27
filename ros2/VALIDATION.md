@@ -21,4 +21,13 @@ Tested runtime commit: f08bcfd805c577b2fa63afdcb377ca4283142215.
 - Installed launch arguments, preflight entry point and generated ConeArray interface checked on both architectures.
 - Arduino Uno / AVR: sketch compiled successfully, 4614 bytes program storage and 278 bytes global memory.
 - The runner hosts are Ubuntu 24.04; ROS build/test runs inside Ubuntu **20.04** containers. Jetson deployment itself is native, without Docker.
-- Follow-up commit changes documentation only. No physical hardware or GPU inference result is implied.
+- Commit 99499b46117b79ecbee3593b7c10aa0c7700ddc6 adds STOP centring, timed Servo.detach(), manual STOP latching and firmware time simulation. No physical hardware or GPU inference result is implied.
+
+## STOP and watchdog correction (2026-09-27)
+
+Run: https://github.com/salimadze2005-beep/car_control_project_new_Danis/actions/runs/36340527534
+Runtime commit: 99499b46117b79ecbee3593b7c10aa0c7700ddc6.
+
+- ARM64 and AMD64 / Foxy / Python 3.8.10: **30 tests passed, 0 skipped** on each architecture.
+- Arduino Uno sketch compiled; deterministic host simulation passed STOP, watchdog, centre, timed detach, restart and malformed packet checks.
+- This establishes software behaviour. Mechanical centre, steering under load, servo power and actual Jetson timing remain to be checked on the vehicle.
