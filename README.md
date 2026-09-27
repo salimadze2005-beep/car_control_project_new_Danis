@@ -1,4 +1,4 @@
-# 🚗 Computer Vision & Control for Autonomous Mobile Platform
+# Computer Vision & Control for Autonomous Mobile Platform
 
 **Computer Vision / Robotics проект автономной мобильной платформы на NVIDIA Jetson Xavier.**
 
