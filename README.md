@@ -69,18 +69,7 @@ Arduino / Motors
 
 ## Оптимизация real-time pipeline
 
-В [`Jetson Xavier/server.py`](Jetson%20Xavier/server.py) захват кадров, детекция и запись разделены между потоками.
-
-Для CV inference используется очередь ограниченного размера:
-
-```python
-self.detect_queue = queue.Queue(maxsize=1)
-self.result_queue = queue.Queue(maxsize=1)
-```
-
-Это принципиально для real-time управления: если inference не успевает обработать каждый кадр, система **пропускает устаревшие кадры**, а не увеличивает latency.
-
-Также pipeline использует:
+Пайплайн использует:
 
 - очередь ограниченного размера кадра, чтобы система не увеличивала задержку
 - обработку не каждого кадра через `process_every`;
