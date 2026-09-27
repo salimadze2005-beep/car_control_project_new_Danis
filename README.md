@@ -1,3 +1,9 @@
+# Jetson: ROS 2 Foxy / JetPack 5.1.3
+
+Нативный ROS 2 контур для Jetson AGX Xavier: **[инструкция запуска и защиты приводов](ros2/README.md)**. PC-пульт сохранён. Начните с dry_run; требуется ваша обученная TensorRT-модель конусов.
+
+Ниже — прежнее описание проекта и ROS 1 симуляторов.
+
 # car_control_project_new_Danis — ветка ros
 
 Существующий запуск машинки: `Jetson Xavier/server.py` (ZED + TensorRT + Arduino).
