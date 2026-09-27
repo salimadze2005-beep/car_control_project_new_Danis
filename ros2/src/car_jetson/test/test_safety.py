@@ -30,7 +30,8 @@ class ActuationTests(unittest.TestCase):
             if a.packet(t):
                 times.append(t)
         self.assertEqual(len(times), 5)
-        self.assertAlmostEqual(times[0], 0.2)
+        self.assertAlmostEqual(times[0], 0.05)
+        self.assertAlmostEqual(times[1], 0.25)
 
     def test_hysteresis_ignores_jitter_but_accumulates_small_drift(self):
         a = self.make()
@@ -54,23 +55,28 @@ class ActuationTests(unittest.TestCase):
         a.set_target(1, -1, 1)
         a.packet(20)
         self.assertEqual(a.last_packet[0], 1500)
-        self.assertEqual(a.angle, 70)  # no giant slew after a scheduling stall
+        self.assertLessEqual(a.angle - 70, 3.001)  # no giant slew after a scheduling stall
+        self.assertEqual(a.target_angle, 100)
 
-    def test_emergency_bypasses_rate_and_holds_steering(self):
+    def test_emergency_neutral_then_slews_to_center(self):
         a = self.make()
         a.set_target(1, 1, 0.05)
         a.packet(0.05)
         angle = a.angle
         a.stop()
-        self.assertEqual(a.packet(0.051), ('<1500,%d>' % round(angle)).encode())
-        self.assertEqual(a.angle, angle)
+        self.assertEqual(a.packet(0.051), ('<1500,%d,S>' % round(a.angle)).encode())
+        self.assertLessEqual(abs(a.angle - angle), 0.061)
+        self.assertEqual(a.target_angle, a.p.center)
+        for i in range(1, 61):
+            a.packet(0.051 + i * 0.01)
+        self.assertAlmostEqual(a.angle, a.p.center)
 
     def test_watchdog_measures_input_not_output_heartbeat(self):
         a = self.make()
         a.set_target(1, 0, 0.05)
         a.packet(0.05)
         a.packet(0.25)
-        self.assertEqual(a.packet(0.36), b'<1500,100>')
+        self.assertEqual(a.packet(0.36), b'<1500,100,S>')
 
     def test_nan_and_out_of_range_stop(self):
         for bad in (math.nan, math.inf, 2, -2):
@@ -78,7 +84,14 @@ class ActuationTests(unittest.TestCase):
             a.set_target(1, 0, 0.05)
             a.packet(0.05)
             self.assertFalse(a.set_target(bad, 0, 0.06))
-            self.assertEqual(a.packet(0.06), b'<1500,100>')
+            self.assertEqual(a.packet(0.06), b'<1500,100,S>')
+
+    def test_stop_marker_emitted_even_at_neutral_motor(self):
+        a = self.make()
+        a.set_target(0, 1, 0.05)  # manual steering while stationary is supported
+        self.assertEqual(a.packet(0.05), b'<1500,97>')
+        a.stop()
+        self.assertEqual(a.packet(0.051), b'<1500,97,S>')
 
     def test_invalid_limits(self):
         for kwargs in (dict(rate_hz=0), dict(heartbeat_s=0.5), dict(slew_deg_s=-1),
@@ -114,7 +127,7 @@ class SessionTests(unittest.TestCase):
         self.s.cones(self.lane, 0.1, 0.03)
         self.s.tick(0.1)
         self.s.cones([], 0.11, 0)
-        self.assertEqual(self.s.tick(0.11), b'<1500,100>')
+        self.assertEqual(self.s.tick(0.11), b'<1500,100,S>')
 
     def test_invalid_udp_cannot_keep_moving(self):
         self.s.receive('1,0', 0.05)
@@ -154,6 +167,22 @@ class SessionTests(unittest.TestCase):
         self.s.receive('A', 0.22)
         self.s.cones(self.lane, 0.3, 0)
         self.assertGreater(self.a.target_motor, 1500)
+
+    def test_stop_is_not_cancelled_by_pc_neutral_heartbeat(self):
+        self.s.receive('1,1', 0.05)
+        self.s.tick(0.05)
+        self.s.receive('S', 0.06)
+        self.assertEqual(self.s.tick(0.06)[:6], b'<1500,')
+        self.assertTrue(self.a.stopped)
+        for i in range(1, 20):
+            t = 0.06 + i * 0.05
+            self.s.receive('0,0', t)
+            self.s.tick(t)
+            self.assertTrue(self.a.stopped)
+        self.assertAlmostEqual(self.a.angle, self.a.p.center)
+        self.s.receive('0,1', 1.1)  # explicit steering request rearms manual
+        self.assertFalse(self.a.stopped)
+        self.assertEqual(self.a.target_motor, 1500)
 
     def test_remote_speed_ceiling_and_stop(self):
         self.s.receive('speed:1560,1430', 0.05)

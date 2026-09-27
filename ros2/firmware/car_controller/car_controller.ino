@@ -1,5 +1,5 @@
 // Companion firmware for the ROS 2 Jetson. Calibrate constants on YOUR vehicle.
-// Existing <motor_us,steer_degrees> protocol, USB 9600 baud.
+// Existing <motor_us,steer_degrees> plus optional <motor_us,steer_degrees,S> STOP.
 #include <Servo.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,17 +10,21 @@ Servo steering;
 const int NEUTRAL = 1500, REVERSE = 1420, FORWARD = 1570;
 const int CENTER = 100, STEER_MIN = 70, STEER_MAX = 130;
 const unsigned long WATCHDOG_MS = 500, STEER_PERIOD_MS = 50;
+const unsigned long RELEASE_MS = 1200;  // release servo torque after safe return
 const int MAX_STEP = 3;  // 60 command-degrees/s, at most 20 changes/s
 char input[32];
 byte used = 0;
 bool receiving = false;
+bool stopping = true;
 int angle = CENTER, target = CENTER, motorValue = NEUTRAL;
-unsigned long lastPacket = 0, lastSteer = 0;
+unsigned long lastPacket = 0, lastSteer = 0, stopSince = 0;
 
 void stopMotor() {
   if (motorValue != NEUTRAL) motor.writeMicroseconds(NEUTRAL);
   motorValue = NEUTRAL;
-  target = angle;  // hold angle; no abrupt centering at lost link
+  if (!stopping) stopSince = millis();
+  stopping = true;
+  target = CENTER;  // slew to the calibrated centre, then detach
 }
 
 bool number(char *text, long &result) {
@@ -33,15 +37,32 @@ bool number(char *text, long &result) {
 
 void packet() {
   char *comma = strchr(input, ',');
-  if (!comma || strchr(comma + 1, ',')) { stopMotor(); return; }
+  if (!comma) { stopMotor(); return; }
+  char *mode = strchr(comma + 1, ',');
+  bool safeStop = false;
+  if (mode) {
+    safeStop = mode[1] == 'S' && mode[2] == '\0';
+    *mode = '\0';
+    if (!safeStop) { stopMotor(); return; }
+  }
   *comma = '\0';
   long m, s;
   if (!number(input, m) || !number(comma + 1, s) ||
-      m < REVERSE || m > FORWARD || s < STEER_MIN || s > STEER_MAX) {
+      m < REVERSE || m > FORWARD || s < STEER_MIN || s > STEER_MAX ||
+      (safeStop && m != NEUTRAL)) {
     stopMotor();
     return;  // invalid packets never feed watchdog
   }
   lastPacket = millis();
+  if (safeStop) {
+    stopMotor();  // ignore stale steering angle encoded in STOP packet
+    return;
+  }
+  stopping = false;
+  if (!steering.attached()) {
+    steering.attach(10);
+    steering.write(angle);  // stored centre after detach
+  }
   if ((int)m != motorValue) motor.writeMicroseconds((int)m);
   motorValue = (int)m;
   target = (int)s;
@@ -55,11 +76,11 @@ void setup() {
   steering.attach(10);
   motor.writeMicroseconds(NEUTRAL);
   steering.write(CENTER);
-  lastPacket = lastSteer = millis();
+  lastPacket = lastSteer = stopSince = millis();
 }
 
 void loop() {
-  // Bound parsing so watchdog and servo updates still run under Serial floods.
+  // Bound parsing so watchdog and steering updates run under Serial floods.
   for (byte budget = 0; budget < 64 && Serial.available(); ++budget) {
     char c = Serial.read();
     if (c == '<') { used = 0; receiving = true; }
@@ -79,7 +100,11 @@ void loop() {
     int delta = constrain(target - angle, -MAX_STEP, MAX_STEP);
     if (delta != 0) {
       angle += delta;
-      steering.write(angle);
+      if (steering.attached()) steering.write(angle);
     }
+  }
+  if (stopping && angle == CENTER && steering.attached() &&
+      now - stopSince >= RELEASE_MS) {
+    steering.detach();  // stop 50 Hz pulses and holding torque
   }
 }

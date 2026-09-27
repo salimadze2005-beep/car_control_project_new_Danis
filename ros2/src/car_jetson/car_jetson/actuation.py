@@ -45,6 +45,7 @@ class Actuator:
         self.last_tick = None
         self.last_sent = None
         self.last_packet = None
+        self.last_stop_mode = None
         self.stopped = True
 
     def set_target(self, speed, steering, now):
@@ -66,9 +67,9 @@ class Actuator:
         return True
 
     def stop(self):
-        # Hold current steering: do not jerk toward centre when camera/link fails.
+        # Remove motor torque now; return steering to calibrated centre at the normal slew rate.
         self.target_motor = self.p.neutral
-        self.target_angle = self.angle
+        self.target_angle = float(self.p.center)
         self.received = None
         self.stopped = True
 
@@ -81,12 +82,13 @@ class Actuator:
         step = self.p.slew_deg_s * dt
         self.angle += max(-step, min(step, delta))
         value = (self.target_motor, int(round(self.angle)))
-        emergency = (value[0] == self.p.neutral and self.last_packet is not None
-                     and self.last_packet[0] != self.p.neutral)
+        emergency = (self.stopped and self.last_packet is not None
+                     and (self.last_packet[0] != self.p.neutral or not self.last_stop_mode))
         elapsed = float('inf') if self.last_sent is None else now - self.last_sent
         if not emergency and elapsed + 1e-9 < 1 / self.p.rate_hz:
             return None
-        if value == self.last_packet and elapsed + 1e-9 < self.p.heartbeat_s:
+        if value == self.last_packet and self.stopped == self.last_stop_mode and elapsed + 1e-9 < self.p.heartbeat_s:
             return None
-        self.last_packet, self.last_sent = value, now
-        return ('<%d,%d>' % value).encode('ascii')
+        self.last_packet, self.last_sent, self.last_stop_mode = value, now, self.stopped
+        # Third field is a backwards-compatible stop marker: the old sketch ignores it.
+        return (('<%d,%d,S>' if self.stopped else '<%d,%d>') % value).encode('ascii')

@@ -11,6 +11,7 @@ class Session:
         self.controller = Controller(parameters or Parameters())
         self.sensor_timeout, self.link_timeout = sensor_timeout, link_timeout
         self.auto = False
+        self.manual_disarmed = True
         self.link = None
         self.sensor = None
         self.auto_since = None
@@ -21,6 +22,7 @@ class Session:
 
     def disable(self, reason=''):
         self.auto = False
+        self.manual_disarmed = True
         self.auto_since = None
         self.sensor = None
         self.controller.reset()
@@ -58,7 +60,11 @@ class Session:
             if self.auto and (speed != 0 or steering != 0):
                 self.disable('Manual override')
             if not self.auto:
-                self.actuator.set_target(speed, steering, now)
+                # PC sends neutral 20 times/s. It must not silently cancel STOP.
+                if speed != 0 or steering != 0:
+                    self.manual_disarmed = False
+                if not self.manual_disarmed:
+                    self.actuator.set_target(speed, steering, now)
             return True
         except (ValueError, AttributeError):
             self.disable('Rejected malformed/out-of-range command')

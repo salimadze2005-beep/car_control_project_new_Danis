@@ -50,3 +50,5 @@ jobs:
           arduino-cli core install arduino:avr
           arduino-cli lib install Servo
           arduino-cli compile --fqbn arduino:avr:uno ros2/firmware/car_controller
+          g++ -std=c++17 -I ros2/firmware/test ros2/firmware/test/firmware_safety.cpp -o /tmp/firmware_safety
+          /tmp/firmware_safety
